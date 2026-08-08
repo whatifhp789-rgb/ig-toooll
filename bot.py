@@ -15,7 +15,10 @@ ERROR = f'{rd}[{lrd}-{rd}]{rd} '
 
 os.system('cls' if os.name == 'nt' else 'clear')
 
-TELEGRAM_TOKEN = input(f'{true}{pe}📱 8438829745:AAGKGPAFcGr6P-M6YrxQpZ7FQmmg9LnGsoc')
+mport os
+
+# input() ki jagah environment variable se token lein
+TELEGRAM_TOKEN = os.getenv("8438829745:AAGKGPAFcGr6P-M6YrxQpZ7FQmmg9LnGsoc")
 CHAT_ID = input(f'{true}{yw}📱 7431786238: ')
 os.system('cls' if os.name == 'nt' else 'clear')
 import webbrowser
