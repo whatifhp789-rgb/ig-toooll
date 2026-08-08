@@ -278,7 +278,6 @@ def send_verification_email(session, headers, email, update, context, retries=3)
                 context.bot.send_message(
                     chat_id=update.effective_chat.id,
                     text=f"🔐 <b>CAPTCHA DETECTED!</b>\n\n"
-                         f"Instagram is asking for verification.\n"
                          f"📧 Email: {email}\n\n"
                          f"💡 Solutions:\n"
                          f"• Try different proxy\n"
@@ -286,18 +285,6 @@ def send_verification_email(session, headers, email, update, context, retries=3)
                          f"• Wait 5 minutes",
                     parse_mode='HTML'
                 )
-                
-                # Try to extract captcha image URL
-                img_match = re.search(r'<img[^>]+src="([^"]+cap[^"]+)"', resp.text, re.I)
-                if img_match:
-                    img_url = img_match.group(1)
-                    if not img_url.startswith('http'):
-                        img_url = 'https://www.instagram.com' + img_url
-                    context.bot.send_message(
-                        chat_id=update.effective_chat.id,
-                        text=f"📸 Captcha URL: {img_url}\nPlease open in browser and solve."
-                    )
-                
                 return False, "CAPTCHA_REQUIRED"
             
             try:
@@ -307,15 +294,16 @@ def send_verification_email(session, headers, email, update, context, retries=3)
                 continue
             
             if result.get('email_sent'):
+                # ✅ OTP SENT with tick
                 context.bot.send_message(
                     chat_id=update.effective_chat.id,
                     text=f"✅ <b>OTP SENT!</b> ✅\n\n"
                          f"📧 Verification code sent to:\n"
                          f"<code>{email}</code>\n\n"
-                         f"📱 Please check your email and send the 6-digit code here.",
+                         f"📱 <b>Please send the 6-digit code here:</b>",
                     parse_mode='HTML'
                 )
-                return True, device_id
+                return True, device_id, session
             else:
                 error_msg = result.get('message', 'Unknown error')
                 if 'too many' in str(error_msg).lower() or 'rate' in str(error_msg).lower():
@@ -333,7 +321,7 @@ def send_verification_email(session, headers, email, update, context, retries=3)
             print(f"⚠️ Attempt {attempt+1} failed: {str(e)[:50]}")
             time.sleep(2)
     
-    return False, "Failed after 3 attempts"
+    return False, "Failed after 3 attempts", None
 
 # ================== VERIFY CODE ==================
 def verify_code(session, headers, email, code, device_id, retries=3):
@@ -359,7 +347,7 @@ def verify_code(session, headers, email, code, device_id, retries=3):
                 continue
             
             if result.get('status') == 'ok':
-                return True, result.get('signup_code')
+                return True, result.get('signup_code'), session
             else:
                 time.sleep(2)
                 continue
@@ -368,7 +356,7 @@ def verify_code(session, headers, email, code, device_id, retries=3):
             print(f"⚠️ Attempt {attempt+1} failed: {str(e)[:50]}")
             time.sleep(2)
     
-    return False, "Verification failed"
+    return False, "Verification failed", session
 
 # ================== CREATE ACCOUNT ==================
 def create_account(session, headers, email, signup_code, device_id, retries=3):
@@ -459,7 +447,7 @@ def create_account_flow(email, update, context):
         
         session, headers, csrf = get_headers_and_csrf()
         
-        sent, device_id = send_verification_email(session, headers, email, update, context)
+        sent, device_id, session = send_verification_email(session, headers, email, update, context)
         
         if not sent:
             if device_id == "CAPTCHA_REQUIRED":
@@ -473,11 +461,15 @@ def create_account_flow(email, update, context):
                 is_processing = False
                 return False
         
+        # ✅ CRITICAL: Set waiting_for_code state
         context.user_data['session'] = session
         context.user_data['headers'] = headers
         context.user_data['device_id'] = device_id
         context.user_data['email'] = email
         context.user_data['waiting_for_code'] = True
+        
+        # ⏰ Set timeout - 5 minutes
+        context.user_data['code_timeout'] = time.time() + 300
         
         return True
         
@@ -504,14 +496,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     proxy_status = f"{proxy_type.upper()}" if proxy_type else "❌ Not Set"
     
     await update.message.reply_text(
-        f"🔥 <b>ZETA INSTA - FINAL</b>\n\n"
+        f"🔥 <b>ZETA INSTA - FIXED</b>\n\n"
         f"👑 Alpha, ready!\n"
         f"├ Proxy: {proxy_status}\n"
         f"├ Processing: {'🟢' if is_processing else '🔴'}\n"
         f"├ Name: 🇮🇳 Indian 40+\n"
         f"├ OTP: ✅ Shows with tick\n"
         f"└ Captcha: 🔐 Auto-detect\n\n"
-        f"<i>Click a button to start:</i>",
+        f"<i>Click READY, send email, get OTP, send code!</i>",
         parse_mode='HTML',
         reply_markup=reply_markup
     )
@@ -555,12 +547,13 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['waiting_for_email'] = True
         
     elif query.data == 'status':
+        waiting = context.user_data.get('waiting_for_code', False)
         status_msg = (
             f"📊 <b>STATUS</b>\n\n"
             f"├ Proxy: {proxy_type.upper() if proxy_type else '❌ Direct'}\n"
             f"├ Processing: {'🟢' if is_processing else '🔴'}\n"
             f"├ Email: {context.user_data.get('email', 'Not Set')}\n"
-            f"└ Waiting: {'📨 Code' if context.user_data.get('waiting_for_code') else '❌'}"
+            f"└ Waiting: {'📨 Code' if waiting else '❌'}"
         )
         await query.edit_message_text(status_msg, parse_mode='HTML')
         
@@ -589,6 +582,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     message = update.message.text
     
+    # Handle proxy input
     if context.user_data.get('waiting_for_proxy'):
         if message.lower() == '/cancel':
             context.user_data['waiting_for_proxy'] = False
@@ -609,6 +603,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"{msg}\n\n/start for menu")
         return
     
+    # Handle email input
     if context.user_data.get('waiting_for_email'):
         if message.lower() == '/cancel':
             context.user_data['waiting_for_email'] = False
@@ -624,36 +619,52 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['email'] = email
         
         success = create_account_flow(email, update, context)
+        if not success:
+            is_processing = False
         return
     
+    # ✅ CRITICAL: Handle code input
     if context.user_data.get('waiting_for_code'):
+        # Check timeout
+        timeout = context.user_data.get('code_timeout', 0)
+        if time.time() > timeout:
+            context.user_data['waiting_for_code'] = False
+            is_processing = False
+            await update.message.reply_text("⏰ Timeout! Please click READY again.")
+            return
+        
         code = message.strip()
         if len(code) != 6 or not code.isdigit():
             await update.message.reply_text("❌ 6 digits required! Try again.")
             return
         
-        context.user_data['waiting_for_code'] = False
-        
+        # Get session data
         session = context.user_data.get('session')
         headers = context.user_data.get('headers')
         email = context.user_data.get('email')
         device_id = context.user_data.get('device_id')
         
         if not all([session, headers, email, device_id]):
+            context.user_data['waiting_for_code'] = False
+            is_processing = False
             await update.message.reply_text("❌ Session expired! Click READY again.")
             return
         
-        await update.message.reply_text("⏳ Verifying & creating...")
+        # Clear waiting state
+        context.user_data['waiting_for_code'] = False
         
-        verified, signup_code = verify_code(session, headers, email, code, device_id)
+        await update.message.reply_text("⏳ Verifying code & creating account...")
+        
+        verified, signup_code, session = verify_code(session, headers, email, code, device_id)
         if not verified:
-            await update.message.reply_text(f"❌ Verification failed: {signup_code}")
+            await update.message.reply_text(f"❌ Verification failed: {signup_code}\n💡 Try again or new proxy.")
             is_processing = False
             return
         
         result = create_account(session, headers, email, signup_code, device_id)
         
         if result['success']:
+            # Save account
             with open('accounts_insta.txt', 'a') as f:
                 f.write(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}]\n")
                 f.write(f"Name: {result['full_name']}\n")
@@ -673,7 +684,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"📧 {result['email']}\n"
                 f"🎂 {result['age']} years\n"
                 f"🌐 Proxy: {proxy_type.upper() if proxy_type else 'Direct'}\n\n"
-                f"✅ Saved!"
+                f"✅ Saved in accounts_insta.txt"
             )
             
             await update.message.reply_text(msg, parse_mode='HTML')
@@ -690,6 +701,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         is_processing = False
         return
     
+    # Default
     await update.message.reply_text("❓ Unknown. /start for menu.")
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -713,17 +725,17 @@ def main():
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         data = {
             'chat_id': CHAT_ID,
-            'text': "🔥 ZETA INSTA - FINAL FIXED!\n✅ Proxy working\n✅ OTP with tick\n✅ Captcha support\nAlpha, /start",
+            'text': "🔥 ZETA INSTA - OTP FIXED!\n✅ OTP sends → Bot waits for code\n✅ 5 min timeout\nAlpha, /start",
         }
         requests.post(url, data=data)
     except:
         pass
     
     print(f"\n{SUCCESS}✅ Bot Started Successfully!")
-    print(f"{true}🌐 HTTP | SOCKS4 | SOCKS5 Proxy Support")
+    print(f"{true}🌐 HTTP | SOCKS4 | SOCKS5 Proxy")
     print(f"{true}🇮🇳 Indian Names | 40+ Age")
-    print(f"{true}✅ OTP Status with Tick")
-    print(f"{true}🔐 Auto Captcha Detection")
+    print(f"{true}✅ OTP → Bot waits for code")
+    print(f"{true}⏰ 5 Minute Timeout")
     print(f"{true}Send /start in Telegram!")
     
     application.run_polling()
