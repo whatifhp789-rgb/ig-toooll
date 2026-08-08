@@ -15,7 +15,7 @@ ERROR = f'{rd}[{lrd}-{rd}]{rd} '
 
 os.system('cls' if os.name == 'nt' else 'clear')
 
-TELEGRAM_TOKEN = input(f'{true}{pe}📱 8438829745:AAGKGPAFcGr6P-M6YrxQpZ7FQmmg9LnGsoc: ')
+TELEGRAM_TOKEN = input(f'{true}{pe}📱 8438829745:AAGKGPAFcGr6P-M6YrxQpZ7FQmmg9LnGsoc')
 CHAT_ID = input(f'{true}{yw}📱 7431786238: ')
 os.system('cls' if os.name == 'nt' else 'clear')
 import webbrowser
