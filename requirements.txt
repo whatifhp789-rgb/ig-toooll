@@ -1,4 +1,2 @@
-names
-requests
-telebot
 selenium
+ Update
