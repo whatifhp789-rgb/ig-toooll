@@ -5,13 +5,18 @@ import time
 import re
 import requests
 from datetime import datetime
+
+# ================== SELENIUM WITH AUTO DRIVER ==================
 from selenium import webdriver
 from selenium.webdriver.common.by import By
-from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
+
+# Auto download ChromeDriver
+from webdriver_manager.chrome import ChromeDriverManager
+from selenium.webdriver.chrome.service import Service
 
 # ================== TELEGRAM CREDENTIALS ==================
 TELEGRAM_TOKEN = "8914036332:AAHA4FB4jau6BahjOSDEQIYPmtkSwRqKluE"
@@ -63,12 +68,12 @@ def generate_password(first_name):
     specials = ['@', '#', '$', '&']
     return first_name + random.choice(specials) + ''.join(random.choices(string.ascii_letters + string.digits, k=8))
 
-# ================== CHROME DRIVER SETUP ==================
+# ================== CHROME DRIVER SETUP (AUTO) ==================
 def setup_driver():
-    """ChromeDriver setup with options"""
+    """Auto install ChromeDriver + Setup"""
     chrome_options = Options()
     
-    # Headless mode (comment out for debugging)
+    # Headless mode off for debugging
     # chrome_options.add_argument("--headless")
     
     chrome_options.add_argument("--no-sandbox")
@@ -86,7 +91,9 @@ def setup_driver():
     if proxies:
         chrome_options.add_argument(f'--proxy-server={proxies}')
     
-    driver = webdriver.Chrome(options=chrome_options)
+    # 🔥 AUTO INSTALL + SERVICE
+    service = Service(ChromeDriverManager().install())
+    driver = webdriver.Chrome(service=service, options=chrome_options)
     driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
     
     return driver
@@ -97,10 +104,14 @@ def create_account_selenium(email, update, context):
     global driver, is_processing
     
     try:
-        # Setup driver
+        # Setup driver with auto install
+        context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=f"🔄 Downloading/Setting up ChromeDriver... (first time takes 10-15 sec)"
+        )
+        
         driver = setup_driver()
         
-        # Send status
         context.bot.send_message(
             chat_id=update.effective_chat.id,
             text=f"🌐 Opening Instagram signup page..."
@@ -114,11 +125,9 @@ def create_account_selenium(email, update, context):
         try:
             captcha_element = driver.find_element(By.XPATH, "//div[contains(@class, 'captcha')]")
             if captcha_element:
-                # Take screenshot
                 screenshot_path = f"captcha_{int(time.time())}.png"
                 driver.save_screenshot(screenshot_path)
                 
-                # Send to Telegram
                 with open(screenshot_path, 'rb') as f:
                     context.bot.send_photo(
                         chat_id=update.effective_chat.id,
@@ -127,8 +136,6 @@ def create_account_selenium(email, update, context):
                         parse_mode='HTML'
                     )
                 os.remove(screenshot_path)
-                
-                # Wait for user to solve
                 context.user_data['waiting_for_captcha'] = True
                 return False
         except:
@@ -419,11 +426,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     await update.message.reply_text(
-        f"🔥 <b>ZETA INSTA - SELENIUM</b>\n\n"
+        f"🔥 <b>ZETA INSTA - SELENIUM (AUTO DRIVER)</b>\n\n"
         f"👑 Alpha, ready!\n"
         f"├ Processing: {'🟢' if is_processing else '🔴'}\n"
         f"├ Name: 🇮🇳 Indian 40+\n"
-        f"└ Status: ✅ Real Browser\n\n"
+        f"└ Driver: ✅ Auto Install\n\n"
         f"<i>Click READY → Send email → Get OTP → Send code</i>",
         parse_mode='HTML',
         reply_markup=reply_markup
@@ -499,18 +506,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             is_processing = False
         return
     
-    # Captcha solved (user sends anything when waiting for captcha)
+    # Captcha solved
     if context.user_data.get('waiting_for_captcha'):
         context.user_data['waiting_for_captcha'] = False
         await update.message.reply_text(
             "✅ Captcha solved! Continuing...\n"
             "Check your email for OTP and send code here."
         )
-        # Continue the flow - check if OTP was sent
         driver = context.user_data.get('driver')
         if driver:
             try:
-                # Check if OTP field appears
                 WebDriverWait(driver, 10).until(
                     EC.presence_of_element_located((By.NAME, "verificationCode"))
                 )
@@ -564,15 +569,15 @@ def main():
     
     try:
         requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-                     data={'chat_id': CHAT_ID, 'text': "🔥 ZETA INSTA - SELENIUM!\nAlpha, /start"})
+                     data={'chat_id': CHAT_ID, 'text': "🔥 ZETA INSTA - AUTO DRIVER!\nAlpha, /start"})
     except:
         pass
     
-    print(f"\n✅ Bot Started! (Selenium Browser)")
-    print(f"📌 Make sure ChromeDriver is installed!")
+    print(f"\n✅ Bot Started! (Auto ChromeDriver)")
+    print(f"📌 First time will download ChromeDriver (10-15 sec)")
     print(f"Send /start in Telegram!")
     
     application.run_polling()
 
 if __name__ == "__main__":
-    main() 
+    main()
