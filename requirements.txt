@@ -1,3 +1,1 @@
-selenium
- Update
-python-telegram-bot
+requests
