@@ -1,6 +1,6 @@
 FROM python:3.11-slim
 
-# ================== CHROME INSTALL (Naya tareeka) ==================
+# ================== CHROME INSTALL ==================
 RUN apt-get update && apt-get install -y \
     wget \
     unzip \
@@ -11,8 +11,9 @@ RUN apt-get update && apt-get install -y \
     && apt-get update && apt-get install -y google-chrome-stable \
     && rm -rf /var/lib/apt/lists/*
 
-# ================== CHROMEDRIVER INSTALL ==================
-RUN CHROME_VERSION=$(google-chrome --version | awk '{print $3}' | cut -d '.' -f1-3) \
+# ================== CHROMEDRIVER INSTALL (FIXED) ==================
+RUN CHROME_VERSION=$(google-chrome --version | awk '{print $3}' | cut -d '.' -f1-3 || echo "120.0.6099.109") \
+    && echo "✅ Chrome Version: $CHROME_VERSION" \
     && wget -q "https://storage.googleapis.com/chrome-for-testing-public/${CHROME_VERSION}/linux64/chromedriver-linux64.zip" \
     && unzip chromedriver-linux64.zip \
     && mv chromedriver /usr/local/bin/ \
