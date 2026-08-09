@@ -1,16 +1,33 @@
-# 1. Sabse pehle base image specify karna zaroori hai
-FROM python:3.10-slim
+FROM python:3.11-slim
 
-# 2. Phir zaroori packages install karein
-RUN apt-get update && apt-get install -y gnupg wget curl
+# ================== CHROME INSTALL ==================
+RUN apt-get update && apt-get install -y \
+    wget \
+    unzip \
+    curl \
+    gnupg \
+    && wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add - \
+    && echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google.list \
+    && apt-get update && apt-get install -y google-chrome-stable \
+    && rm -rf /var/lib/apt/lists/*
 
-# 3. Google ki key ko secure folder mein download karein
-RUN wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | gpg --dearmor > /usr/share/keyrings/google-chrome.gpg
+# ================== CHROMEDRIVER INSTALL ==================
+RUN CHROME_VERSION=$(google-chrome --version | awk '{print $3}' | cut -d '.' -f1-3) \
+    && wget -q "https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/${CHROME_VERSION}/linux64/chromedriver-linux64.zip" \
+    && unzip chromedriver-linux64.zip \
+    && mv chromedriver /usr/local/bin/ \
+    && chmod +x /usr/local/bin/chromedriver \
+    && rm chromedriver-linux64.zip
 
-# 4. Repository list mein keyrings ka path add karein
-RUN echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list
+# ================== PYTHON DEPENDENCIES ==================
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-# 5. Repository update karke Chrome install karein
-RUN apt-get update && apt-get install -y google-chrome-stable --no-install-recommends
+# ================== COPY SCRIPT ==================
+COPY bot.py .
+COPY Procfile .
+COPY runtime.txt .
 
-# (Agar iske neeche aapke baaki ke commands jaise WORKDIR, COPY, ya pip install the, toh unhe iske niche waise hi rehne dena)
+# ================== RUN ==================
+CMD ["python", "bot.py"]
