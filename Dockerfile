@@ -1,5 +1,7 @@
 FROM python:3.11-slim
 
+WORKDIR /app
+
 # Chrome install
 RUN apt-get update && apt-get install -y \
     wget \
@@ -11,7 +13,7 @@ RUN apt-get update && apt-get install -y \
     && apt-get update && apt-get install -y google-chrome-stable \
     && rm -rf /var/lib/apt/lists/*
 
-# ChromeDriver install
+# ChromeDriver install (sahi version ke saath)
 RUN CHROME_VERSION=$(google-chrome --version | awk '{print $3}' | cut -d '.' -f1-3) \
     && wget -q "https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/${CHROME_VERSION}/linux64/chromedriver-linux64.zip" \
     && unzip chromedriver-linux64.zip \
@@ -20,11 +22,10 @@ RUN CHROME_VERSION=$(google-chrome --version | awk '{print $3}' | cut -d '.' -f1
     && rm chromedriver-linux64.zip
 
 # Python dependencies
-WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy bot script
-COPY bot.py .
+# ✅ IMPORTANT: bot.py COPY karo
+COPY bot.py /app/bot.py
 
-CMD ["python", "bot.py"]
+CMD ["python", "/app/bot.py"]
