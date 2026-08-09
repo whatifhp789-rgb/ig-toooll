@@ -2,17 +2,8 @@ import os
 import random
 import string
 import time
-import re
-import requests
 import logging
 from datetime import datetime
-
-# ================== LOGGING ==================
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
 
 # ================== SELENIUM ==================
 from selenium import webdriver
@@ -26,15 +17,19 @@ from selenium.webdriver.chrome.service import Service
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
+# ================== LOGGING ==================
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 # ================== CONFIG ==================
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "8914036332:AAHA4FB4jau6BahjOSDEQIYPmtkSwRqKluE")
-CHAT_ID = os.getenv("CHAT_ID", "7431786238")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
 
 if not TELEGRAM_TOKEN:
     logger.error("❌ TELEGRAM_TOKEN set nahi hai!")
     exit(1)
 
-logger.info(f"✅ Bot Token: {TELEGRAM_TOKEN[:10]}...")
+logger.info(f"✅ Token: {TELEGRAM_TOKEN[:10]}...")
 
 # ================== INDIAN NAMES ==================
 INDIAN_FIRST = [
@@ -77,11 +72,11 @@ def generate_password(first_name):
     specials = ['@', '#', '$', '&']
     return first_name + random.choice(specials) + ''.join(random.choices(string.ascii_letters + string.digits, k=8))
 
-# ================== CHROME DRIVER SETUP ==================
+# ================== CHROME DRIVER (DOCKER) ==================
 def setup_driver():
     chrome_options = Options()
     
-    # Headless mode ON
+    # Headless mode
     chrome_options.add_argument("--headless")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
@@ -90,26 +85,14 @@ def setup_driver():
     chrome_options.add_argument("--disable-blink-features=AutomationControlled")
     chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
     chrome_options.add_experimental_option('useAutomationExtension', False)
-    
     chrome_options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
     
-    try:
-        # Railway default path
-        service = Service("/usr/bin/chromedriver")
-        driver = webdriver.Chrome(service=service, options=chrome_options)
-        logger.info("✅ ChromeDriver loaded from /usr/bin/chromedriver")
-    except:
-        try:
-            # Fallback: webdriver-manager
-            from webdriver_manager.chrome import ChromeDriverManager
-            service = Service(ChromeDriverManager().install())
-            driver = webdriver.Chrome(service=service, options=chrome_options)
-            logger.info("✅ ChromeDriver loaded via webdriver-manager")
-        except Exception as e:
-            logger.error(f"❌ ChromeDriver setup failed: {e}")
-            raise
-    
+    # Docker default path
+    service = Service("/usr/local/bin/chromedriver")
+    driver = webdriver.Chrome(service=service, options=chrome_options)
     driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+    
+    logger.info("✅ ChromeDriver started!")
     return driver
 
 # ================== SELENIUM SIGNUP ==================
@@ -259,14 +242,10 @@ def verify_and_finish(code, update, context):
 # ================== TELEGRAM HANDLERS ==================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.info(f"✅ /start command received from {update.effective_user.id}")
-    
+    logger.info(f"✅ /start from {update.effective_user.id}")
     keyboard = [[InlineKeyboardButton("✅ READY - Create Account", callback_data='start_creation')]]
-    
     await update.message.reply_text(
-        f"🔥 <b>ZETA INSTA - RAILWAY</b>\n\n"
-        f"👑 Alpha, ready!\n"
-        f"Click READY → Send email → Get OTP → Send code",
+        f"🔥 <b>ZETA INSTA - DOCKER</b>\n\nClick READY → Send email → Get OTP → Send code",
         parse_mode='HTML',
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
@@ -278,46 +257,35 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if query.data == 'start_creation':
         if is_processing:
-            await query.edit_message_text("⚠️ Already processing! Wait.")
+            await query.edit_message_text("⚠️ Already processing!")
             return
-        
         await query.edit_message_text("📧 Send email (with @):")
         context.user_data['waiting_for_email'] = True
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global is_processing
     msg = update.message.text
-    user_id = update.effective_user.id
-    
-    logger.info(f"📨 Message from {user_id}: {msg[:50]}")
     
     if context.user_data.get('waiting_for_email'):
-        if msg.lower() == '/cancel':
-            context.user_data['waiting_for_email'] = False
-            await update.message.reply_text("❌ Cancelled.")
-            return
-        
         if '@' not in msg:
-            await update.message.reply_text("❌ Invalid email! Try again.")
+            await update.message.reply_text("❌ Invalid email!")
             return
-        
         context.user_data['waiting_for_email'] = False
         is_processing = True
-        await update.message.reply_text("🌐 Starting browser... (headless mode)")
+        await update.message.reply_text("🌐 Starting browser...")
         create_account_selenium(msg, update, context)
         return
     
     if context.user_data.get('waiting_for_code'):
         if len(msg) != 6 or not msg.isdigit():
-            await update.message.reply_text("❌ 6 digits required! Try again.")
+            await update.message.reply_text("❌ 6 digits required!")
             return
-        
         context.user_data['waiting_for_code'] = False
-        await update.message.reply_text("⏳ Verifying code...")
+        await update.message.reply_text("⏳ Verifying...")
         verify_and_finish(msg, update, context)
         return
     
-    await update.message.reply_text("❓ Unknown. Type /start")
+    await update.message.reply_text("❓ /start")
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
@@ -328,28 +296,15 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         driver = None
     await update.message.reply_text("❌ Cancelled.")
 
-async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.error(f"❌ Update error: {context.error}")
-    try:
-        await update.message.reply_text("❌ Internal error! Check logs.")
-    except:
-        pass
-
 # ================== MAIN ==================
 def main():
     logger.info("🚀 Starting bot...")
-    
     app = Application.builder().token(TELEGRAM_TOKEN).build()
-    
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("cancel", cancel))
     app.add_handler(CallbackQueryHandler(button_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    app.add_error_handler(error_handler)
-    
     logger.info("✅ Bot started! Polling...")
-    
-    # Railway pe port binding ignore karo
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
