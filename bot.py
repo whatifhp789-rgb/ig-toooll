@@ -76,7 +76,6 @@ def generate_password(first_name):
 def setup_driver():
     chrome_options = Options()
     
-    # Headless mode
     chrome_options.add_argument("--headless")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
@@ -87,7 +86,6 @@ def setup_driver():
     chrome_options.add_experimental_option('useAutomationExtension', False)
     chrome_options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
     
-    # Docker default path
     service = Service("/usr/local/bin/chromedriver")
     driver = webdriver.Chrome(service=service, options=chrome_options)
     driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
@@ -102,7 +100,7 @@ def create_account_selenium(email, update, context):
     try:
         context.bot.send_message(
             chat_id=update.effective_chat.id,
-            text=f"🌐 Opening Instagram signup page..."
+            text="🌐 Opening Instagram signup page..."
         )
         
         driver = setup_driver()
@@ -121,7 +119,6 @@ def create_account_selenium(email, update, context):
             text=f"📝 Filling form...\n🇮🇳 {full_name}"
         )
         
-        # Fill form
         email_field = WebDriverWait(driver, 10).until(
             EC.presence_of_element_located((By.NAME, "emailOrPhone"))
         )
@@ -137,7 +134,6 @@ def create_account_selenium(email, update, context):
         driver.find_element(By.XPATH, "//button[contains(text(), 'Next')]").click()
         time.sleep(3)
         
-        # DOB
         WebDriverWait(driver, 10).until(
             EC.presence_of_element_located((By.NAME, "month"))
         ).send_keys(str(month))
@@ -151,9 +147,7 @@ def create_account_selenium(email, update, context):
         
         context.bot.send_message(
             chat_id=update.effective_chat.id,
-            text=f"✅ <b>OTP SENT!</b> ✅\n\n"
-                 f"📧 Code sent to: <code>{email}</code>\n"
-                 f"📱 Send 6-digit code NOW:",
+            text=f"✅ <b>OTP SENT!</b> ✅\n\n📧 Code sent to: <code>{email}</code>\n📱 Send 6-digit code NOW:",
             parse_mode='HTML'
         )
         
@@ -198,7 +192,6 @@ def verify_and_finish(code, update, context):
             is_processing = False
             return False
         
-        # OTP field
         otp_field = WebDriverWait(driver, 10).until(
             EC.presence_of_element_located((By.NAME, "verificationCode"))
         )
@@ -207,12 +200,10 @@ def verify_and_finish(code, update, context):
         driver.find_element(By.XPATH, "//button[contains(text(), 'Next')]").click()
         time.sleep(5)
         
-        # Check success
         WebDriverWait(driver, 15).until(
             EC.presence_of_element_located((By.XPATH, "//a[contains(@href, '/accounts/edit/')]"))
         )
         
-        # Save
         with open('accounts_insta.txt', 'a') as f:
             f.write(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}]\n")
             f.write(f"Name: {full_name}\nUsername: {username}\nPassword: {password}\nEmail: {email}\nAge: {age}\n")
