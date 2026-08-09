@@ -1,6 +1,6 @@
 FROM python:3.11-slim
 
-# ================== CHROME INSTALL ==================
+# Chrome install
 RUN apt-get update && apt-get install -y \
     wget \
     unzip \
@@ -11,7 +11,7 @@ RUN apt-get update && apt-get install -y \
     && apt-get update && apt-get install -y google-chrome-stable \
     && rm -rf /var/lib/apt/lists/*
 
-# ================== CHROMEDRIVER INSTALL ==================
+# ChromeDriver install
 RUN CHROME_VERSION=$(google-chrome --version | awk '{print $3}' | cut -d '.' -f1-3) \
     && wget -q "https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/${CHROME_VERSION}/linux64/chromedriver-linux64.zip" \
     && unzip chromedriver-linux64.zip \
@@ -19,15 +19,12 @@ RUN CHROME_VERSION=$(google-chrome --version | awk '{print $3}' | cut -d '.' -f1
     && chmod +x /usr/local/bin/chromedriver \
     && rm chromedriver-linux64.zip
 
-# ================== PYTHON DEPENDENCIES ==================
+# Python dependencies
 WORKDIR /app
-
-# ✅ Pehle requirements copy karo (caching ke liye)
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# ✅ Phir bot.py copy karo
+# Copy bot script
 COPY bot.py .
 
-# ================== RUN ==================
 CMD ["python", "bot.py"]
