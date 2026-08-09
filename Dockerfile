@@ -21,13 +21,13 @@ RUN CHROME_VERSION=$(google-chrome --version | awk '{print $3}' | cut -d '.' -f1
 
 # ================== PYTHON DEPENDENCIES ==================
 WORKDIR /app
+
+# ✅ Pehle requirements copy karo (caching ke liye)
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# ================== COPY SCRIPT ==================
+# ✅ Phir bot.py copy karo
 COPY bot.py .
-COPY Procfile .
-COPY runtime.txt .
 
 # ================== RUN ==================
 CMD ["python", "bot.py"]
