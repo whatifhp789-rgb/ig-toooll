@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
-# Telegram Bot for Instagram Signup – Email/Phone via Buttons (Multi-Step Fix)
+# Telegram Bot for Instagram Signup – Email/Phone, Proxy, Full CAPTCHA Handling
 
 import os, sys, json, time, random, threading, requests, logging, sqlite3
 from io import BytesIO
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
+from datetime import datetime
+import re
 
 # ====== CHANGE THESE TWO LINES ONLY ======
-BOT_TOKEN = "8760264279:AAHV1UCXF_molZCaSjuFIO7ZqnEzG5tiAt8"      # <--- put your bot token (string)
+BOT_TOKEN = "8760264279:AAEe-s2BKS__jAi6l_s8baGqSwTSGoMVTOk"      # <--- put your bot token
 OWNER_IDS = [8754004223]                # <--- put your Telegram user ID (int)
 # =======================================
 
-FIXED_PASSWORD = "qwerty9900@"
+FIXED_PASSWORD = "qwerty9900"          # password without '@'
 INSTA_URL = "https://www.instagram.com/accounts/emailsignup/"
-PROXY_SERVER = PROXY_USER = PROXY_PASS = ""
 NAV_TIMEOUT = 30000
 ELEMENT_TIMEOUT = 10000
 
@@ -26,6 +27,7 @@ def init_db():
     c = conn.cursor()
     c.execute('CREATE TABLE IF NOT EXISTS bot_state (key TEXT PRIMARY KEY, value TEXT)')
     c.execute('CREATE TABLE IF NOT EXISTS user_creds (chat_id INTEGER PRIMARY KEY, email TEXT, phone TEXT)')
+    c.execute('CREATE TABLE IF NOT EXISTS user_proxies (chat_id INTEGER PRIMARY KEY, proxy TEXT)')
     conn.commit()
     conn.close()
 
@@ -59,7 +61,29 @@ def set_phone(chat_id, phone):
     conn.commit()
     conn.close()
 
-# Random Indian name generator
+def get_proxy(chat_id):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT proxy FROM user_proxies WHERE chat_id=?", (chat_id,))
+    row = c.fetchone()
+    conn.close()
+    return row[0] if row else None
+
+def set_proxy(chat_id, proxy):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("REPLACE INTO user_proxies (chat_id, proxy) VALUES (?, ?)", (chat_id, proxy))
+    conn.commit()
+    conn.close()
+
+def del_proxy(chat_id):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("DELETE FROM user_proxies WHERE chat_id=?", (chat_id,))
+    conn.commit()
+    conn.close()
+
+# -------------------- Random generators --------------------
 INDIAN_FIRST_NAMES = [
     "Aarav","Vivaan","Aditya","Vihaan","Arjun","Sai","Pranav","Dhruv",
     "Krishna","Shaurya","Aryan","Ishaan","Reyansh","Ayaan","Ananya",
@@ -75,11 +99,87 @@ INDIAN_SURNAMES = [
 def random_indian_name():
     return f"{random.choice(INDIAN_FIRST_NAMES)} {random.choice(INDIAN_SURNAMES)}"
 
-def generate_username(full_name):
-    base = full_name.replace(" ", "").lower()
-    return f"{base}{random.randint(100, 999)}"
+def generate_username():
+    letters = ''.join(random.choices('abcdefghijklmnopqrstuvwxyz', k=random.randint(4,5)))
+    digits = ''.join(random.choices('0123456789', k=random.randint(2,3)))
+    return f"{letters}_{digits}"
 
-# ========== TELEGRAM HELPERS ==========
+def random_dob():
+    age = random.randint(30, 70)
+    year = datetime.now().year - age
+    month = random.randint(1, 12)
+    day = random.randint(1, 28)
+    return day, month, year
+
+# -------------------- Proxy parsing & validation --------------------
+def parse_proxy(proxy_str):
+    """Parse proxy string into Playwright-friendly dict or None if invalid."""
+    proxy_str = proxy_str.strip()
+    # Remove protocol if present
+    if '://' in proxy_str:
+        protocol, rest = proxy_str.split('://', 1)
+        if protocol not in ['http', 'https', 'socks5']:
+            return None
+    else:
+        protocol = 'http'
+        rest = proxy_str
+    # Now rest: maybe user:pass@host:port or host:port
+    if '@' in rest:
+        userpass, hostport = rest.split('@', 1)
+        if ':' in userpass:
+            user, passwd = userpass.split(':', 1)
+        else:
+            user, passwd = userpass, ''
+    else:
+        user, passwd = None, None
+        hostport = rest
+    if ':' in hostport:
+        host, port = hostport.split(':', 1)
+        if not port.isdigit():
+            return None
+    else:
+        return None
+    server = f"{protocol}://{host}:{port}"
+    proxy_dict = {"server": server}
+    if user:
+        proxy_dict["username"] = user
+    if passwd:
+        proxy_dict["password"] = passwd
+    return proxy_dict
+
+def validate_proxy(proxy_str):
+    """Check if proxy is alive by making a request to Instagram."""
+    parsed = parse_proxy(proxy_str)
+    if not parsed:
+        return False, "Invalid proxy format."
+    # Build requests proxy URL
+    server = parsed["server"]
+    auth = ""
+    if parsed.get("username") and parsed.get("password"):
+        auth = f"{parsed['username']}:{parsed['password']}@"
+    # For requests we need full URL with auth
+    # We can use the parsed directly: server might not have auth, but we can add
+    # Instead, we'll use the string with auth if provided
+    proxy_url = server
+    if parsed.get("username"):
+        # Replace protocol with auth
+        protocol_part = server.split('://')[0]
+        rest = server.split('://')[1]
+        proxy_url = f"{protocol_part}://{parsed['username']}:{parsed['password']}@{rest}" if parsed.get('password') else f"{protocol_part}://{parsed['username']}@{rest}"
+    proxies = {
+        'http': proxy_url,
+        'https': proxy_url
+    }
+    try:
+        resp = requests.get('https://www.instagram.com', proxies=proxies, timeout=10)
+        if resp.status_code == 200:
+            return True, "Proxy is alive."
+        else:
+            return False, f"Proxy returned status {resp.status_code}."
+    except Exception as e:
+        return False, f"Proxy error: {str(e)}"
+
+# -------------------- Telegram helpers --------------------
 def call_telegram(method, **kwargs):
     url = f"{API_URL}/{method}"
     try:
@@ -136,7 +236,7 @@ def edit_message_text(chat_id, message_id, text, reply_markup=None):
         payload["reply_markup"] = reply_markup
     return call_telegram("editMessageText", **payload)
 
-# ========== AUTOMATION ==========
+# -------------------- Automation --------------------
 class AutomationSession:
     def __init__(self, chat_id):
         self.chat_id = chat_id
@@ -151,15 +251,17 @@ class AutomationSession:
 sessions = {}
 sessions_lock = threading.Lock()
 
-def start_browser():
+def start_browser(proxy_str=None):
     logger.info("🔄 Starting Playwright...")
     playwright = sync_playwright().start()
     proxy = None
-    if PROXY_SERVER:
-        proxy = {"server": PROXY_SERVER}
-        if PROXY_USER and PROXY_PASS:
-            proxy["username"] = PROXY_USER
-            proxy["password"] = PROXY_PASS
+    if proxy_str:
+        parsed = parse_proxy(proxy_str)
+        if parsed:
+            proxy = parsed
+            logger.info(f"Using proxy: {proxy_str}")
+        else:
+            logger.warning(f"Proxy string invalid, ignoring.")
     logger.info("🔄 Launching Chromium (headless)...")
     browser = playwright.chromium.launch(
         headless=True,
@@ -196,6 +298,7 @@ def handle_captcha_telegram(page, session):
     solution = session.captcha_value
     if not solution:
         return False
+    # Find CAPTCHA input and fill
     captcha_input = page.locator('input[name="captcha"]')
     if not captcha_input.is_visible():
         captcha_input = page.locator('input[name="verification"]')
@@ -232,26 +335,33 @@ def run_automation(chat_id):
         login_type = "phone"
 
     full_name = random_indian_name()
-    username = generate_username(full_name)
+    username = generate_username()
     password = FIXED_PASSWORD
+    day, month, year = random_dob()
 
-    logger.info(f"🚀 Starting signup for chat {chat_id} using {login_type}: {login_value}")
+    # Get proxy for this chat
+    proxy_str = get_proxy(chat_id)
+    if proxy_str:
+        logger.info(f"Using stored proxy: {proxy_str}")
+    else:
+        logger.info("No proxy set, using direct connection.")
 
     try:
-        playwright, browser, page = start_browser()
+        playwright, browser, page = start_browser(proxy_str)
         send_message(chat_id, "🚀 Browser launched. Starting signup...")
 
-        # Step 1: Navigate
+        # Navigate
         logger.info("🌐 Navigating to Instagram signup page...")
         page.goto(INSTA_URL, timeout=NAV_TIMEOUT)
         page.wait_for_load_state("networkidle")
 
+        # CAPTCHA check
         if detect_captcha(page):
             if not handle_captcha_telegram(page, session):
                 raise Exception("CAPTCHA failed")
             page.wait_for_load_state("networkidle")
 
-        # Step 2: Enter email/phone and click "Next"
+        # Fill email/phone
         logger.info("📝 Filling email/phone...")
         email_phone_input = page.locator('input[name="emailOrPhone"]')
         if email_phone_input.is_visible():
@@ -265,75 +375,105 @@ def run_automation(chat_id):
             if phone_input.is_visible() and phone:
                 phone_input.fill(phone)
 
-        # Click "Next" or "Continue"
-        logger.info("🔘 Clicking 'Next' button...")
-        next_btn = page.locator('button[type="submit"]:visible')
-        if next_btn.is_visible():
-            next_btn.click()
-            logger.info("Clicked submit button as Next.")
-        else:
-            next_btn = page.get_by_text("Next", exact=True)
-            if next_btn.is_visible():
-                next_btn.click()
-                logger.info("Clicked 'Next' text.")
-            else:
-                next_btn = page.get_by_text("Continue", exact=True)
-                if next_btn.is_visible():
-                    next_btn.click()
-                    logger.info("Clicked 'Continue' text.")
-                else:
-                    raise Exception("Could not find 'Next' or 'Continue' button.")
-
-        page.wait_for_load_state("networkidle")
-        page.locator('input[name="fullName"]').wait_for(timeout=10000)
-        logger.info("Second page loaded.")
-
-        if detect_captcha(page):
-            if not handle_captcha_telegram(page, session):
-                raise Exception("CAPTCHA after first step")
-            page.wait_for_load_state("networkidle")
-
-        # Step 3: Fill name, username, password
-        logger.info("📝 Filling name, username, password...")
-        name_input = page.locator('input[name="fullName"]')
-        if name_input.is_visible():
-            name_input.fill(full_name)
-        username_input = page.locator('input[name="username"]')
-        if username_input.is_visible():
-            username_input.fill(username)
+        # Password
+        logger.info("📝 Filling password...")
         pwd_input = page.locator('input[name="password"]')
         if pwd_input.is_visible():
             pwd_input.fill(password)
+        else:
+            raise Exception("Password field not found.")
 
-        send_message(chat_id, f"✅ Form filled. Using {login_type}: {login_value}")
+        # Date of Birth
+        logger.info("📝 Filling date of birth...")
+        # Day
+        day_input = page.locator('input[name="day"]')
+        if day_input.is_visible():
+            day_input.fill(str(day))
+        else:
+            day_select = page.locator('select[name="day"]')
+            if day_select.is_visible():
+                day_select.select_option(str(day))
+            else:
+                day_input = page.locator('input[placeholder*="Day"]')
+                if day_input.is_visible():
+                    day_input.fill(str(day))
+                else:
+                    raise Exception("Day field not found.")
+        # Month
+        month_input = page.locator('input[name="month"]')
+        if month_input.is_visible():
+            month_input.fill(str(month))
+        else:
+            month_select = page.locator('select[name="month"]')
+            if month_select.is_visible():
+                month_select.select_option(str(month))
+            else:
+                month_input = page.locator('input[placeholder*="Month"]')
+                if month_input.is_visible():
+                    month_input.fill(str(month))
+                else:
+                    raise Exception("Month field not found.")
+        # Year
+        year_input = page.locator('input[name="year"]')
+        if year_input.is_visible():
+            year_input.fill(str(year))
+        else:
+            year_input = page.locator('input[placeholder*="Year"]')
+            if year_input.is_visible():
+                year_input.fill(str(year))
+            else:
+                year_select = page.locator('select[name="year"]')
+                if year_select.is_visible():
+                    year_select.select_option(str(year))
+                else:
+                    raise Exception("Year field not found.")
+
+        # Full name
+        logger.info("📝 Filling full name...")
+        name_input = page.locator('input[name="fullName"]')
+        if name_input.is_visible():
+            name_input.fill(full_name)
+        else:
+            raise Exception("Full name field not found.")
+
+        # Username
+        logger.info("📝 Filling username...")
+        username_input = page.locator('input[name="username"]')
+        if username_input.is_visible():
+            username_input.fill(username)
+        else:
+            raise Exception("Username field not found.")
+
+        send_message(chat_id, f"✅ Form filled.\nEmail/Phone: {login_value}\nName: {full_name}\nUsername: {username}\nDOB: {day}/{month}/{year}")
         logger.info("All fields filled.")
 
-        # Step 4: Click "Sign up"
-        logger.info("🔘 Clicking 'Sign up' button...")
-        signup_btn = page.locator('button[type="submit"]:visible')
-        if signup_btn.is_visible():
-            signup_btn.click()
-            logger.info("Clicked submit button as Sign up.")
+        # Submit
+        logger.info("🔘 Clicking Submit...")
+        submit_btn = page.locator('button[type="submit"]:visible')
+        if submit_btn.is_visible():
+            submit_btn.click()
+            logger.info("Clicked submit button.")
         else:
-            signup_btn = page.get_by_text("Sign up", exact=True)
-            if signup_btn.is_visible():
-                signup_btn.click()
-                logger.info("Clicked 'Sign up' text.")
+            submit_btn = page.get_by_text("Submit", exact=True)
+            if submit_btn.is_visible():
+                submit_btn.click()
+                logger.info("Clicked 'Submit' text.")
             else:
-                signup_btn = page.locator('form button[type="submit"]:visible')
-                if signup_btn.is_visible():
-                    signup_btn.click()
-                    logger.info("Clicked fallback submit button.")
+                submit_btn = page.locator('form button:visible')
+                if submit_btn.is_visible():
+                    submit_btn.click()
+                    logger.info("Clicked any visible button in form.")
                 else:
                     raise Exception("Submit button not found.")
 
         page.wait_for_load_state("networkidle")
+        # Check for CAPTCHA after submit
         if detect_captcha(page):
             if not handle_captcha_telegram(page, session):
-                raise Exception("CAPTCHA after signup")
+                raise Exception("CAPTCHA after submit")
             page.wait_for_load_state("networkidle")
 
-        # Step 5: OTP verification
+        # Wait for OTP
         logger.info("⏳ Waiting for OTP page...")
         otp_input = page.locator('input[name="code"]')
         otp_input.wait_for(timeout=ELEMENT_TIMEOUT)
@@ -346,18 +486,28 @@ def run_automation(chat_id):
         if not otp:
             raise ValueError("OTP empty")
 
+        # Fill OTP and click verify
         otp_input.fill(otp)
         verify_btn = page.locator('button[type="submit"]:visible')
         if verify_btn.is_visible():
             verify_btn.click()
+            logger.info("Clicked verify button.")
         else:
             verify_btn = page.get_by_text("Verify", exact=True)
             if verify_btn.is_visible():
                 verify_btn.click()
+                logger.info("Clicked 'Verify' text.")
             else:
                 raise Exception("Verify button not found.")
 
-        # Step 6: Check final result
+        # Wait for possible CAPTCHA after OTP
+        page.wait_for_load_state("networkidle")
+        if detect_captcha(page):
+            if not handle_captcha_telegram(page, session):
+                raise Exception("CAPTCHA after OTP")
+            page.wait_for_load_state("networkidle")
+
+        # Final result check
         try:
             page.wait_for_url("**/accounts/emailsignup/**", timeout=5000, state='detached')
             page.wait_for_load_state("networkidle")
@@ -394,7 +544,7 @@ def run_automation(chat_id):
         session.running = False
         send_message(chat_id, "🏁 Finished.")
 
-# ========== HANDLERS ==========
+# -------------------- Handlers --------------------
 def handle_start(chat_id, message_id=None):
     keyboard = {
         "inline_keyboard": [
@@ -408,6 +558,9 @@ def handle_start(chat_id, message_id=None):
         status += f"\n📧 Email: {creds['email']}"
     if creds["phone"]:
         status += f"\n📱 Phone: {creds['phone']}"
+    proxy = get_proxy(chat_id)
+    if proxy:
+        status += f"\n🔑 Proxy: {proxy}"
     if status:
         status = "\nCurrent credentials:" + status + "\nChoose option to change or start."
     else:
@@ -497,6 +650,22 @@ def handle_message(msg):
         cmd = text.split()[0].lower()
         if cmd == '/start':
             handle_start(chat_id)
+        elif cmd == '/addproxy':
+            parts = text.split(maxsplit=1)
+            if len(parts) < 2 or not parts[1]:
+                send_message(chat_id, "Usage: /addproxy <proxy_string>\nExamples:\n  http://user:pass@ip:port\n  socks5://ip:port\n  ip:port (assumes http)")
+                return
+            proxy_str = parts[1].strip()
+            # Validate
+            ok, msg = validate_proxy(proxy_str)
+            if not ok:
+                send_message(chat_id, f"❌ Proxy validation failed: {msg}")
+                return
+            set_proxy(chat_id, proxy_str)
+            send_message(chat_id, f"✅ Proxy added successfully!\n{proxy_str}")
+        elif cmd == '/removeproxy':
+            del_proxy(chat_id)
+            send_message(chat_id, "✅ Proxy removed.")
         elif cmd == '/setemail':
             parts = text.split(maxsplit=1)
             if len(parts) < 2 or not parts[1]:
@@ -521,11 +690,14 @@ def handle_message(msg):
             send_message(chat_id, f"✅ Phone set to: {new_phone}")
         elif cmd == '/status':
             creds = get_credential(chat_id)
+            proxy = get_proxy(chat_id)
             msg = "📊 Current status:\n"
             if creds["email"]:
                 msg += f"📧 Email: {creds['email']}\n"
             if creds["phone"]:
                 msg += f"📱 Phone: {creds['phone']}\n"
+            if proxy:
+                msg += f"🔑 Proxy: {proxy}\n"
             if not creds["email"] and not creds["phone"]:
                 msg += "❌ No credential set. Use /start to choose."
             send_message(chat_id, msg)
@@ -536,11 +708,11 @@ def handle_message(msg):
             else:
                 send_message(chat_id, "No pending action.")
         else:
-            send_message(chat_id, "Unknown command. Use /start, /setemail, /setphone, /status, /cancel")
+            send_message(chat_id, "Unknown command. Available:\n/start\n/addproxy <proxy>\n/removeproxy\n/setemail\n/setphone\n/status\n/cancel")
     else:
         send_message(chat_id, "Use commands or /start to begin.")
 
-# ========== POLLING ==========
+# -------------------- Polling --------------------
 def polling_loop():
     offset = 0
     logger.info("Polling loop started.")
@@ -575,7 +747,7 @@ def polling_loop():
             logger.error(f"Poll exception: {e}")
             time.sleep(5)
 
-# ========== MAIN ==========
+# -------------------- Main --------------------
 if __name__ == "__main__":
     init_db()
     call_telegram("deleteWebhook", drop_pending_updates=True)
