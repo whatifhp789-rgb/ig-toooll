@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Telegram Bot for Instagram Signup – Fixed DOB dropdowns
+# Telegram Bot for Instagram Signup – Ultra‑Robust DOB Dropdowns
 
 import os, sys, json, time, random, threading, requests, logging, sqlite3
 from io import BytesIO
@@ -217,9 +217,11 @@ def edit_message_text(chat_id, message_id, text, reply_markup=None):
         payload["reply_markup"] = reply_markup
     return call_telegram("editMessageText", **payload)
 
-# ====================== DOB field helper (dropdowns) ======================
-def fill_dob_field(page, field, value):
-    """Robustly find and fill a day/month/year dropdown (select)."""
+# ====================== ULTRA‑ROBUST DOB FIELD HELPER ======================
+def fill_dob_field(page, field, value, order_index):
+    """
+    Fill a DOB dropdown. order_index: 0 for Day, 1 for Month, 2 for Year.
+    """
     field_name = field.lower()
     # List of selectors to try
     selectors = []
@@ -230,45 +232,65 @@ def fill_dob_field(page, field, value):
     selectors.append(f'select[id*="{field_name}" i]')
     # 3. By aria-label
     selectors.append(f'select[aria-label*="{field}" i]')
-    # 4. By placeholder (sometimes used)
+    # 4. By placeholder
     selectors.append(f'select[placeholder*="{field}" i]')
     # 5. By label + select combination
-    selectors.append(f'label:has-text("{field}") + select')        # immediate sibling
-    selectors.append(f'label:has-text("{field}") ~ select')        # any following sibling
+    selectors.append(f'label:has-text("{field}") + select')
+    selectors.append(f'label:has-text("{field}") ~ select')
 
     for sel in selectors:
         try:
             element = page.locator(sel)
             if element.is_visible():
                 element.select_option(str(value))
-                logger.info(f"Filled {field} using selector: {sel}")
+                logger.info(f"✅ Filled {field} using selector: {sel}")
                 return True
         except:
             continue
 
-    # Fallback: XPath to find a select that appears after a label containing the text
+    # XPath fallback
     xpath = f'//label[contains(text(), "{field}")]/following::select[1]'
     try:
         element = page.locator(f'xpath={xpath}')
         if element.is_visible():
             element.select_option(str(value))
-            logger.info(f"Filled {field} using XPath: {xpath}")
+            logger.info(f"✅ Filled {field} using XPath: {xpath}")
             return True
     except:
         pass
 
-    # Another XPath: find any select that is in the same container as the label
+    # Another XPath: find any select in same container as label
     xpath2 = f'//label[contains(text(), "{field}")]/..//select'
     try:
         element = page.locator(f'xpath={xpath2}')
         if element.is_visible():
             element.select_option(str(value))
-            logger.info(f"Filled {field} using XPath: {xpath2}")
+            logger.info(f"✅ Filled {field} using XPath: {xpath2}")
             return True
     except:
         pass
 
-    raise Exception(f"{field} field not found after trying all selectors.")
+    # ---- ULTIMATE FALLBACK: use index among all selects ----
+    try:
+        # Wait a moment for all selects to be present
+        page.wait_for_selector('select', timeout=5000)
+        all_selects = page.locator('select').all()
+        if order_index < len(all_selects):
+            sel = all_selects[order_index]
+            if sel.is_visible():
+                sel.select_option(str(value))
+                logger.info(f"✅ Filled {field} using index {order_index} (all selects found: {len(all_selects)})")
+                return True
+    except Exception as e:
+        logger.warning(f"Index fallback failed: {e}")
+
+    # If all fail, log page HTML for debugging (only first 500 chars)
+    try:
+        html = page.content()
+        logger.error(f"Page HTML preview: {html[:500]}")
+    except:
+        pass
+    raise Exception(f"{field} field not found after trying all selectors and index fallback.")
 
 # -------------------- Automation --------------------
 class AutomationSession:
@@ -425,11 +447,11 @@ def run_automation(chat_id):
                 else:
                     raise Exception("Password field not found.")
 
-        # --- DOB using dropdown helper ---
+        # --- DOB using ultra-robust helper ---
         logger.info("📝 Filling date of birth (dropdowns)...")
-        fill_dob_field(page, "Day", day)
-        fill_dob_field(page, "Month", month)
-        fill_dob_field(page, "Year", year)
+        fill_dob_field(page, "Day", day, 0)
+        fill_dob_field(page, "Month", month, 1)
+        fill_dob_field(page, "Year", year, 2)
 
         # Full name
         logger.info("📝 Filling full name...")
