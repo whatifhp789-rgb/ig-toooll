@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Instagram Account Creator Bot – CAPTCHA Support
+# Instagram Account Creator Bot – Correct Endpoints + CAPTCHA
 
 import os
 import random
@@ -9,7 +9,6 @@ import names
 import requests
 import telebot
 import sqlite3
-import json
 from io import BytesIO
 
 # ============================================================
@@ -197,7 +196,7 @@ def get_headers():
             print(f"Header fetch error: {e}")
             time.sleep(5)
 
-# ============ OTP SEND WITH CAPTCHA SUPPORT ============
+# ============ OTP SEND WITH CAPTCHA (CORRECT ENDPOINT) ============
 def send_verification_email(headers, email, proxies, captcha_solution=None, captcha_id=None):
     device_id = headers['cookie'].split('mid=')[1].split(';')[0]
     data = {'device_id': device_id, 'email': email}
@@ -205,16 +204,20 @@ def send_verification_email(headers, email, proxies, captcha_solution=None, capt
         data['captcha_solution'] = captcha_solution
         data['captcha_id'] = captcha_id
 
+    # ✅ CORRECT ENDPOINT (without /web/)
+    url = 'https://www.instagram.com/api/v1/accounts/send_verify_email/'
     response = requests.post(
-        'https://www.instagram.com/api/v1/web/accounts/send_verify_email/',
-        headers=headers, data=data, proxies=proxies, timeout=30
+        url,
+        headers=headers,
+        data=data,
+        proxies=proxies,
+        timeout=30
     )
     if response.status_code == 200:
         resp_json = response.json()
         if resp_json.get('email_sent'):
             return True, response.text, headers, None, None
         elif resp_json.get('require_captcha'):
-            # CAPTCHA required
             captcha_url = resp_json.get('captcha_url')
             captcha_id = resp_json.get('captcha_id')
             return False, "require_captcha", headers, captcha_url, captcha_id
@@ -223,12 +226,17 @@ def send_verification_email(headers, email, proxies, captcha_solution=None, capt
     else:
         return False, f"Status: {response.status_code}, Response: {response.text[:500]}", headers, None, None
 
+# ============ OTP VALIDATION (CORRECT ENDPOINT) ============
 def validate_otp(headers, email, code, proxies):
     device_id = headers['cookie'].split('mid=')[1].split(';')[0]
     data = {'code': code, 'device_id': device_id, 'email': email}
+    url = 'https://www.instagram.com/api/v1/accounts/check_confirmation_code/'  # no /web/
     response = requests.post(
-        'https://www.instagram.com/api/v1/web/accounts/check_confirmation_code/',
-        headers=headers, data=data, proxies=proxies, timeout=30
+        url,
+        headers=headers,
+        data=data,
+        proxies=proxies,
+        timeout=30
     )
     return response
 
@@ -548,7 +556,6 @@ def handle_all_messages(message):
     state = session_data.get('state')
 
     if state == 'waiting_captcha':
-        # User replied with CAPTCHA solution
         solution = message.text.strip()
         if not solution:
             bot.reply_to(message, "❌ Please enter the CAPTCHA text.")
@@ -559,7 +566,6 @@ def handle_all_messages(message):
         proxies = session_data.get('proxies')
         captcha_id = session_data['captcha_id']
 
-        # Resend OTP with CAPTCHA solution
         success, response, headers, _, _ = send_verification_email(headers, email, proxies, solution, captcha_id)
 
         if success:
@@ -573,7 +579,7 @@ def handle_all_messages(message):
         else:
             if response == "require_captcha":
                 bot.send_message(chat_id, "❌ CAPTCHA solution was incorrect. Please try again with a new image.")
-                # Optionally, we could get a new CAPTCHA image and loop, but for simplicity, we let user restart.
+                # For simplicity, we reset the state and ask user to restart
                 del user_sessions[chat_id]
             else:
                 bot.send_message(chat_id, f"❌ Failed to send OTP after CAPTCHA.\n{response}")
@@ -609,5 +615,5 @@ def handle_all_messages(message):
 # ============================================================
 if __name__ == "__main__":
     init_db()
-    print("🤖 Bot started with CAPTCHA support.")
+    print("🤖 Bot started with correct endpoints (no /web/) and CAPTCHA support.")
     bot.infinity_polling()
