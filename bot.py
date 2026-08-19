@@ -48,9 +48,9 @@ def get_random_user_agent():
 def get_random_delay():
     return random.randint(3, 8)
 
-# ============ ORIGINAL HEADER FETCH (PROVEN WORKING) ============
+# ============ HEADER FETCH ============
 def get_headers():
-    """Fetch fresh headers exactly like the original CLI script."""
+    """Fetch fresh headers with cookies."""
     while True:
         try:
             an_agent = get_random_user_agent()
@@ -84,7 +84,7 @@ def get_headers():
                 'content-type': 'application/x-www-form-urlencoded',
                 'cookie': f'dpr=3; csrftoken={r["csrftoken"]}; mid={r["mid"]}; ig_did={r["ig_did"]}',
                 'origin': 'https://www.instagram.com',
-                'referer': 'https://www.instagram.com/accounts/signup/email/',
+                'referer': 'https://www.instagram.com/accounts/emailsignup/',  # <-- REVERTED URL
                 'user-agent': an_agent,
                 'x-csrftoken': r["csrftoken"],
                 'x-ig-app-id': str(appid),
