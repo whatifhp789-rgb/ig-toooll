@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Instagram Account Creator Bot – Indian Names, DP Upload, Longer Delays
+# Instagram Account Creator Bot – With Proxy Management & Validation
 
 import os
 import random
@@ -9,8 +9,8 @@ import names
 import requests
 import telebot
 import json
+import sqlite3
 from io import BytesIO
-from PIL import Image
 
 # ============================================================
 #  🔐 YOUR BOT CREDENTIALS
@@ -20,15 +20,80 @@ OWNER_IDS = [8754004223]                    # <-- Put your Telegram user ID(s)
 # ============================================================
 
 # ============================================================
-#  🌐 PROXY LIST – Add your proxies here
+#  🗃️ DATABASE SETUP (for proxies)
 # ============================================================
-PROXY_LIST = [
-    # "http://user1:pass1@123.45.67.89:8080",
-    # "http://user2:pass2@98.76.54.32:3128",
-]
-# ============================================================
+DB_FILE = "bot_data.db"
 
-# ============ INDIAN NAMES ============
+def init_db():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS proxies (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        proxy TEXT UNIQUE,
+        added_at INTEGER
+    )''')
+    # Also keep user sessions and photos? We'll keep those in memory for now.
+    conn.commit()
+    conn.close()
+
+def add_proxy_to_db(proxy):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    try:
+        c.execute("INSERT INTO proxies (proxy, added_at) VALUES (?, ?)", (proxy, int(time.time())))
+        conn.commit()
+        return True
+    except sqlite3.IntegrityError:
+        return False
+    finally:
+        conn.close()
+
+def remove_proxy_from_db(proxy):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("DELETE FROM proxies WHERE proxy = ?", (proxy,))
+    conn.commit()
+    affected = c.rowcount
+    conn.close()
+    return affected > 0
+
+def get_all_proxies():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT proxy FROM proxies")
+    rows = c.fetchall()
+    conn.close()
+    return [row[0] for row in rows]
+
+def clear_all_proxies():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("DELETE FROM proxies")
+    conn.commit()
+    conn.close()
+
+def validate_proxy(proxy_str):
+    """Check if proxy is alive by making a request to ipinfo.io through it."""
+    try:
+        proxies = {"http": proxy_str, "https": proxy_str}
+        # Use a short timeout
+        response = requests.get("https://ipinfo.io/json", proxies=proxies, timeout=10)
+        if response.status_code == 200:
+            return True, "Proxy is alive."
+        else:
+            return False, f"Proxy returned status {response.status_code}."
+    except Exception as e:
+        return False, f"Proxy error: {str(e)}"
+
+def get_random_proxy():
+    proxies = get_all_proxies()
+    if proxies:
+        return random.choice(proxies)
+    return None
+
+# ============================================================
+#  🧑 INDIAN NAMES & DOB
+# ============================================================
 INDIAN_FIRST_NAMES = [
     "Aarav","Vivaan","Aditya","Vihaan","Arjun","Sai","Pranav","Dhruv",
     "Krishna","Shaurya","Aryan","Ishaan","Reyansh","Ayaan","Ananya",
@@ -47,12 +112,14 @@ def random_indian_name():
 
 def random_dob():
     age = random.randint(30, 80)
-    year = 2026 - age  # approximate current year
+    year = 2026 - age
     month = random.randint(1, 12)
     day = random.randint(1, 28)
     return day, month, year
 
-# ============ BOT SETUP ============
+# ============================================================
+#  🤖 BOT SETUP
+# ============================================================
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
@@ -60,25 +127,20 @@ USER_AGENTS = [
 ]
 
 bot = telebot.TeleBot(BOT_TOKEN)
-user_sessions = {}      # chat_id -> session data
-user_photos = {}        # chat_id -> local photo path for DP
-
-proxy_pool = PROXY_LIST.copy()
-
-def get_random_proxy():
-    if proxy_pool:
-        return random.choice(proxy_pool)
-    return None
+user_sessions = {}
+user_photos = {}
 
 def get_random_user_agent():
     return random.choice(USER_AGENTS)
 
 def get_random_delay():
-    return random.randint(10, 30)  # Increased delay
+    return random.randint(10, 30)
 
-# ============ HEADER FETCH ============
+# ============ HEADER FETCH (WITH FALLBACK APP ID) ============
+DEFAULT_APP_ID = "936619743392459"
+
 def get_headers():
-    """Fetch fresh headers with cookies."""
+    """Fetch fresh headers; use default app id if scraping fails."""
     while True:
         try:
             an_agent = get_random_user_agent()
@@ -100,8 +162,17 @@ def get_headers():
                 proxies=proxies,
                 timeout=30
             )
-            appid = response1.text.split('APP_ID":"')[1].split('"')[0]
-            rollout = response1.text.split('rollout_hash":"')[1].split('"')[0]
+
+            appid = DEFAULT_APP_ID
+            try:
+                appid = response1.text.split('APP_ID":"')[1].split('"')[0]
+            except:
+                pass
+            rollout = "1"
+            try:
+                rollout = response1.text.split('rollout_hash":"')[1].split('"')[0]
+            except:
+                pass
 
             headers = {
                 'authority': 'www.instagram.com',
@@ -151,7 +222,6 @@ def validate_otp(headers, email, code, proxies):
         return None
 
 def upload_profile_pic(sessionid, csrftoken, photo_path, proxies):
-    """Upload profile picture using session cookies."""
     try:
         url = 'https://www.instagram.com/accounts/web_change_profile_picture/'
         headers = {
@@ -230,13 +300,9 @@ def create_instagram_account(headers, email, signup_code, chat_id, proxies):
                 cookie_str = "; ".join([f"{k}={v}" for k, v in cookie_dict.items()])
                 full_cookies = f"{headers['cookie']}; sessionid={sessionid}; {cookie_str}"
 
-                # Upload DP if a photo is set for this chat
                 dp_uploaded = False
                 if chat_id in user_photos and os.path.exists(user_photos[chat_id]):
                     dp_uploaded = upload_profile_pic(sessionid, csrftoken, user_photos[chat_id], proxies)
-                    # Optionally delete the file after upload
-                    # os.remove(user_photos[chat_id])
-                    # del user_photos[chat_id]
 
                 result_msg = (
                     f"✅ **Account Created Successfully!**\n"
@@ -251,7 +317,7 @@ def create_instagram_account(headers, email, signup_code, chat_id, proxies):
                 bot.send_message(chat_id, result_msg, parse_mode="Markdown")
                 return True
 
-            # Error handling (unchanged)
+            # Error handling
             if '"error_type":"username_is_taken"' in response.text:
                 username = generate_username(firstname + random.choice(string.ascii_lowercase))
                 data['username'] = username
@@ -293,8 +359,103 @@ def generate_username(firstname):
     suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=5))
     return f"{base}_{suffix}"
 
-# ============ BOT HANDLERS ============
+# ============================================================
+#  🧰 PROXY MANAGEMENT COMMANDS
+# ============================================================
+@bot.message_handler(commands=['addproxy'])
+def handle_addproxy(message):
+    chat_id = message.chat.id
+    if OWNER_IDS and chat_id not in OWNER_IDS:
+        bot.reply_to(message, "⛔ Unauthorized.")
+        return
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].strip():
+        bot.reply_to(message, "❌ Usage: `/addproxy http://user:pass@ip:port` or `socks5://ip:port`")
+        return
+    proxy_str = parts[1].strip()
 
+    # Validate the proxy
+    ok, msg = validate_proxy(proxy_str)
+    if not ok:
+        bot.reply_to(message, f"❌ Proxy validation failed: {msg}")
+        return
+
+    # Store it
+    if add_proxy_to_db(proxy_str):
+        bot.reply_to(message, f"✅ Proxy added successfully!\n{proxy_str}")
+    else:
+        bot.reply_to(message, f"⚠️ Proxy already exists in the list.")
+
+@bot.message_handler(commands=['removeproxy'])
+def handle_removeproxy(message):
+    chat_id = message.chat.id
+    if OWNER_IDS and chat_id not in OWNER_IDS:
+        bot.reply_to(message, "⛔ Unauthorized.")
+        return
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].strip():
+        bot.reply_to(message, "❌ Usage: `/removeproxy <proxy_string>`")
+        return
+    proxy_str = parts[1].strip()
+    if remove_proxy_from_db(proxy_str):
+        bot.reply_to(message, f"✅ Proxy removed: {proxy_str}")
+    else:
+        bot.reply_to(message, f"❌ Proxy not found in the list.")
+
+@bot.message_handler(commands=['listproxies'])
+def handle_listproxies(message):
+    chat_id = message.chat.id
+    if OWNER_IDS and chat_id not in OWNER_IDS:
+        bot.reply_to(message, "⛔ Unauthorized.")
+        return
+    proxies = get_all_proxies()
+    if not proxies:
+        bot.reply_to(message, "📭 No proxies stored.")
+        return
+    msg = "📋 **Stored Proxies:**\n" + "\n".join([f"• {p}" for p in proxies])
+    bot.reply_to(message, msg, parse_mode="Markdown")
+
+@bot.message_handler(commands=['clearproxies'])
+def handle_clearproxies(message):
+    chat_id = message.chat.id
+    if OWNER_IDS and chat_id not in OWNER_IDS:
+        bot.reply_to(message, "⛔ Unauthorized.")
+        return
+    clear_all_proxies()
+    bot.reply_to(message, "🗑️ All proxies cleared.")
+
+# ============================================================
+#  📷 DP SETUP
+# ============================================================
+@bot.message_handler(commands=['setdp'])
+def handle_setdp(message):
+    chat_id = message.chat.id
+    if OWNER_IDS and chat_id not in OWNER_IDS:
+        bot.reply_to(message, "⛔ Unauthorized.")
+        return
+    bot.reply_to(message, "📸 Please send a photo with caption `/setdp` to set it as your profile picture.")
+
+@bot.message_handler(content_types=['photo'])
+def handle_photo(message):
+    chat_id = message.chat.id
+    if OWNER_IDS and chat_id not in OWNER_IDS:
+        return
+    caption = message.caption or ""
+    if "/setdp" not in caption:
+        return
+    file_id = message.photo[-1].file_id
+    file_info = bot.get_file(file_id)
+    downloaded_file = bot.download_file(file_info.file_path)
+    os.makedirs("temp", exist_ok=True)
+    file_path = f"temp/dp_{chat_id}.jpg"
+    with open(file_path, 'wb') as f:
+        f.write(downloaded_file)
+    user_photos[chat_id] = file_path
+    bot.reply_to(message, "✅ Profile picture saved! It will be used for your next account creation.")
+
+# ============================================================
+#  🚀 ACCOUNT CREATION COMMANDS
+# ============================================================
 @bot.message_handler(commands=['start'])
 def handle_start(message):
     chat_id = message.chat.id
@@ -303,49 +464,17 @@ def handle_start(message):
         return
     bot.reply_to(message,
         "🤖 **Instagram Account Creator Bot**\n\n"
-        "Commands:\n"
-        "/setdp – send a photo with this caption to set your profile picture (used for future accounts).\n"
-        "/create <email> – create an Instagram account.\n"
-        "Example: `/create test@gmail.com`\n\n"
-        "Uses Indian names, age 30-80, and longer delays to appear human."
+        "📌 **Proxy Management:**\n"
+        "/addproxy <proxy> – add a working proxy\n"
+        "/removeproxy <proxy> – remove a proxy\n"
+        "/listproxies – list all saved proxies\n"
+        "/clearproxies – remove all proxies\n\n"
+        "📸 **Profile Picture:**\n"
+        "/setdp – send a photo with this caption to save it\n\n"
+        "🚀 **Create Account:**\n"
+        "/create <email> – start account creation\n\n"
+        "Example: `/create test@gmail.com`"
     )
-
-@bot.message_handler(commands=['setdp'])
-def handle_setdp(message):
-    chat_id = message.chat.id
-    if OWNER_IDS and chat_id not in OWNER_IDS:
-        bot.reply_to(message, "⛔ Unauthorized.")
-        return
-
-    # This command expects a photo to be sent with it, but we handle it separately
-    bot.reply_to(message, "📸 Please send a photo (as a file) with caption /setdp to set it as your profile picture.")
-
-@bot.message_handler(content_types=['photo'])
-def handle_photo(message):
-    chat_id = message.chat.id
-    if OWNER_IDS and chat_id not in OWNER_IDS:
-        return
-
-    # Check if the photo is sent as a reply or with caption "/setdp"
-    caption = message.caption or ""
-    if "/setdp" not in caption:
-        return
-
-    # Download the photo
-    file_id = message.photo[-1].file_id
-    file_info = bot.get_file(file_id)
-    downloaded_file = bot.download_file(file_info.file_path)
-
-    # Save to a temporary file
-    os.makedirs("temp", exist_ok=True)
-    file_path = f"temp/dp_{chat_id}.jpg"
-    with open(file_path, 'wb') as f:
-        f.write(downloaded_file)
-
-    # Optionally resize/compress (keep simple)
-    user_photos[chat_id] = file_path
-
-    bot.reply_to(message, f"✅ Profile picture saved! It will be used for your next account creation.")
 
 @bot.message_handler(commands=['create'])
 def handle_create(message):
@@ -366,7 +495,7 @@ def handle_create(message):
 
     bot.reply_to(message, f"🔄 Starting for `{email}` ...", parse_mode="Markdown")
 
-    for attempt in range(3):
+    for attempt in range(5):
         headers, proxies = get_headers()
         success, response_text, headers = send_verification_email(headers, email, proxies)
         if success:
@@ -379,12 +508,17 @@ def handle_create(message):
             }
             return
         else:
-            if attempt < 2:
-                bot.send_message(chat_id, f"⚠️ OTP failed (attempt {attempt+1}). Retrying...")
-                time.sleep(10)
+            if "Status: 404" in response_text:
+                bot.send_message(chat_id, f"⚠️ OTP failed (404). Refreshing headers and retrying...")
+                time.sleep(5)
+                continue
             else:
-                bot.send_message(chat_id, f"❌ Failed to send OTP after 3 attempts.\n{response_text}")
-                return
+                if attempt < 4:
+                    bot.send_message(chat_id, f"⚠️ OTP failed (attempt {attempt+1}). Retrying...")
+                    time.sleep(10)
+                else:
+                    bot.send_message(chat_id, f"❌ Failed to send OTP after multiple attempts.\n{response_text}")
+                    return
 
 @bot.message_handler(func=lambda msg: True)
 def handle_all_messages(message):
@@ -419,7 +553,10 @@ def handle_all_messages(message):
     else:
         bot.reply_to(message, "ℹ️ Use `/create <email>` to start.")
 
-# ============ MAIN ============
+# ============================================================
+#  🏁 MAIN
+# ============================================================
 if __name__ == "__main__":
-    print("🤖 Bot started with Indian names, DP upload, and longer delays.")
+    init_db()
+    print("🤖 Bot started with proxy management and Indian names.")
     bot.infinity_polling()
