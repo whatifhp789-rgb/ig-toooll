@@ -10,6 +10,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
 
 # ====== CHANGE THESE TWO LINES ONLY ======
 BOT_TOKEN = "8760264279:AAH3BT5mjdYhE6UWbesX07pSDe8ehy1QDSw"
@@ -260,9 +261,12 @@ def start_browser(proxy_str=None):
         else:
             logger.warning("Invalid proxy, ignoring.")
     
-    driver = webdriver.Chrome(options=options)
+    # Explicitly use the installed ChromeDriver
+    service = Service(executable_path='/usr/local/bin/chromedriver')
+    driver = webdriver.Chrome(service=service, options=options)
     driver.set_page_load_timeout(NAV_TIMEOUT)
     driver.implicitly_wait(ELEMENT_TIMEOUT)
+    logger.info("✅ ChromeDriver launched successfully.")
     return driver
 
 def detect_captcha(driver):
