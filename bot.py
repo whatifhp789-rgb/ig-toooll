@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Instagram Account Creator Bot – With Proxy Management & Validation
+# Instagram Account Creator Bot – Universal Proxy Parser, Indian Names, DP Upload
 
 import os
 import random
@@ -8,8 +8,8 @@ import time
 import names
 import requests
 import telebot
-import json
 import sqlite3
+import re
 from io import BytesIO
 
 # ============================================================
@@ -32,7 +32,6 @@ def init_db():
         proxy TEXT UNIQUE,
         added_at INTEGER
     )''')
-    # Also keep user sessions and photos? We'll keep those in memory for now.
     conn.commit()
     conn.close()
 
@@ -72,11 +71,46 @@ def clear_all_proxies():
     conn.commit()
     conn.close()
 
+# ============================================================
+#  🌐 UNIVERSAL PROXY PARSER
+# ============================================================
+def parse_proxy(proxy_str):
+    """
+    Parse proxy string into a format usable by requests.
+    Supports:
+      - ip:port:user:pass
+      - user:pass@ip:port
+      - ip:port
+      - http://user:pass@ip:port
+      - socks5://user:pass@ip:port
+    Returns a string like "http://user:pass@ip:port" or "socks5://..."
+    """
+    proxy_str = proxy_str.strip()
+    # If already has protocol, return as is
+    if proxy_str.startswith(('http://', 'https://', 'socks5://')):
+        return proxy_str
+
+    # Try to detect ip:port:user:pass
+    parts = proxy_str.split(':')
+    if len(parts) == 4:
+        ip, port, user, passwd = parts
+        return f"http://{user}:{passwd}@{ip}:{port}"
+    # Try user:pass@host:port (without protocol)
+    if '@' in proxy_str:
+        # Check if it starts with a protocol? no, we already checked above.
+        return f"http://{proxy_str}"
+    # Just ip:port
+    if ':' in proxy_str:
+        return f"http://{proxy_str}"
+    # fallback
+    return proxy_str
+
 def validate_proxy(proxy_str):
-    """Check if proxy is alive by making a request to ipinfo.io through it."""
+    """Check if proxy is alive using parsed format."""
+    parsed = parse_proxy(proxy_str)
     try:
-        proxies = {"http": proxy_str, "https": proxy_str}
-        # Use a short timeout
+        # For requests, we need a dict with http and https
+        proxies = {"http": parsed, "https": parsed}
         response = requests.get("https://ipinfo.io/json", proxies=proxies, timeout=10)
         if response.status_code == 200:
             return True, "Proxy is alive."
@@ -136,18 +170,19 @@ def get_random_user_agent():
 def get_random_delay():
     return random.randint(10, 30)
 
-# ============ HEADER FETCH (WITH FALLBACK APP ID) ============
+# ============ HEADER FETCH ============
 DEFAULT_APP_ID = "936619743392459"
 
 def get_headers():
-    """Fetch fresh headers; use default app id if scraping fails."""
+    """Fetch fresh headers using a random proxy (if available)."""
     while True:
         try:
             an_agent = get_random_user_agent()
-            proxy_str = get_random_proxy()
+            proxy_raw = get_random_proxy()
             proxies = None
-            if proxy_str:
-                proxies = {"http": proxy_str, "https": proxy_str}
+            if proxy_raw:
+                parsed = parse_proxy(proxy_raw)
+                proxies = {"http": parsed, "https": parsed}
 
             r = requests.get(
                 'https://www.instagram.com/api/v1/web/accounts/login/ajax/',
@@ -168,6 +203,7 @@ def get_headers():
                 appid = response1.text.split('APP_ID":"')[1].split('"')[0]
             except:
                 pass
+
             rollout = "1"
             try:
                 rollout = response1.text.split('rollout_hash":"')[1].split('"')[0]
@@ -181,7 +217,7 @@ def get_headers():
                 'content-type': 'application/x-www-form-urlencoded',
                 'cookie': f'dpr=3; csrftoken={r["csrftoken"]}; mid={r["mid"]}; ig_did={r["ig_did"]}',
                 'origin': 'https://www.instagram.com',
-                'referer': 'https://www.instagram.com/accounts/emailsignup/',
+                'referer': 'https://www.instagram.com/accounts/signup/email/',
                 'user-agent': an_agent,
                 'x-csrftoken': r["csrftoken"],
                 'x-ig-app-id': str(appid),
@@ -370,17 +406,13 @@ def handle_addproxy(message):
         return
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2 or not parts[1].strip():
-        bot.reply_to(message, "❌ Usage: `/addproxy http://user:pass@ip:port` or `socks5://ip:port`")
+        bot.reply_to(message, "❌ Usage: `/addproxy <proxy>`\nSupported formats:\n• `ip:port:user:pass`\n• `user:pass@ip:port`\n• `ip:port`")
         return
     proxy_str = parts[1].strip()
-
-    # Validate the proxy
     ok, msg = validate_proxy(proxy_str)
     if not ok:
         bot.reply_to(message, f"❌ Proxy validation failed: {msg}")
         return
-
-    # Store it
     if add_proxy_to_db(proxy_str):
         bot.reply_to(message, f"✅ Proxy added successfully!\n{proxy_str}")
     else:
@@ -558,5 +590,5 @@ def handle_all_messages(message):
 # ============================================================
 if __name__ == "__main__":
     init_db()
-    print("🤖 Bot started with proxy management and Indian names.")
+    print("🤖 Bot started with universal proxy parser and Indian names.")
     bot.infinity_polling()
