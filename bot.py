@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Telegram Bot for Instagram Signup – Robust Field Detection
+# Telegram Bot for Instagram Signup – Fixed DOB dropdowns
 
 import os, sys, json, time, random, threading, requests, logging, sqlite3
 from io import BytesIO
@@ -217,53 +217,57 @@ def edit_message_text(chat_id, message_id, text, reply_markup=None):
         payload["reply_markup"] = reply_markup
     return call_telegram("editMessageText", **payload)
 
-# ====================== Field finder helper ======================
+# ====================== DOB field helper (dropdowns) ======================
 def fill_dob_field(page, field, value):
-    """Robustly find and fill a day/month/year field."""
-    field_name = field.lower()  # 'day', 'month', 'year'
-    # Build list of selectors to try
+    """Robustly find and fill a day/month/year dropdown (select)."""
+    field_name = field.lower()
+    # List of selectors to try
     selectors = []
-    # 1. by name
-    selectors.append(f'input[name="{field_name}"]')
+
+    # 1. By name attribute
     selectors.append(f'select[name="{field_name}"]')
-    # 2. by placeholder (case‑insensitive)
-    selectors.append(f'input[placeholder*="{field}" i]')
-    # 3. by aria-label
-    selectors.append(f'input[aria-label*="{field}" i]')
-    # 4. common abbreviations
-    if field_name == "day":
-        selectors.append('input[placeholder*="DD" i]')
-    elif field_name == "month":
-        selectors.append('input[placeholder*="MM" i]')
-    elif field_name == "year":
-        selectors.append('input[placeholder*="YYYY" i]')
-        selectors.append('input[placeholder*="Year" i]')
-    # 5. label-based: find label containing the text, then look for input/select after it
-    # We'll try a parent‑based approach: locate label, then get the next input/select within the same container
-    label_selector = f'label:has-text("{field}")'
-    selectors.append(f'{label_selector} + input')
-    selectors.append(f'{label_selector} + select')
-    # 6. generic: any input/select that might be the one (we can't guess, but we try id)
-    selectors.append(f'input[id*="{field_name}" i]')
+    # 2. By id (case-insensitive)
     selectors.append(f'select[id*="{field_name}" i]')
+    # 3. By aria-label
+    selectors.append(f'select[aria-label*="{field}" i]')
+    # 4. By placeholder (sometimes used)
+    selectors.append(f'select[placeholder*="{field}" i]')
+    # 5. By label + select combination
+    selectors.append(f'label:has-text("{field}") + select')        # immediate sibling
+    selectors.append(f'label:has-text("{field}") ~ select')        # any following sibling
 
     for sel in selectors:
         try:
             element = page.locator(sel)
             if element.is_visible():
-                if 'select' in sel:
-                    element.select_option(str(value))
-                else:
-                    element.fill(str(value))
+                element.select_option(str(value))
                 logger.info(f"Filled {field} using selector: {sel}")
                 return True
         except:
             continue
-    # Final fallback: try to find any visible input or select that is not hidden and might be the field
-    # This is risky but better than failing.
-    # We'll try to find an input with type="text" and not hidden, but we don't know which.
-    # For day, we can try to find an input with a placeholder that contains 'day' or 'dd'.
-    # Already covered above.
+
+    # Fallback: XPath to find a select that appears after a label containing the text
+    xpath = f'//label[contains(text(), "{field}")]/following::select[1]'
+    try:
+        element = page.locator(f'xpath={xpath}')
+        if element.is_visible():
+            element.select_option(str(value))
+            logger.info(f"Filled {field} using XPath: {xpath}")
+            return True
+    except:
+        pass
+
+    # Another XPath: find any select that is in the same container as the label
+    xpath2 = f'//label[contains(text(), "{field}")]/..//select'
+    try:
+        element = page.locator(f'xpath={xpath2}')
+        if element.is_visible():
+            element.select_option(str(value))
+            logger.info(f"Filled {field} using XPath: {xpath2}")
+            return True
+    except:
+        pass
+
     raise Exception(f"{field} field not found after trying all selectors.")
 
 # -------------------- Automation --------------------
@@ -421,8 +425,8 @@ def run_automation(chat_id):
                 else:
                     raise Exception("Password field not found.")
 
-        # --- DOB using robust helper ---
-        logger.info("📝 Filling date of birth...")
+        # --- DOB using dropdown helper ---
+        logger.info("📝 Filling date of birth (dropdowns)...")
         fill_dob_field(page, "Day", day)
         fill_dob_field(page, "Month", month)
         fill_dob_field(page, "Year", year)
