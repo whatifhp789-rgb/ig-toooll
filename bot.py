@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Instagram Account Creator Bot – Correct Endpoints + CAPTCHA
+# Instagram Account Creator Bot – CAPTCHA URL Fix
 
 import os
 import random
@@ -9,6 +9,7 @@ import names
 import requests
 import telebot
 import sqlite3
+import json
 from io import BytesIO
 
 # ============================================================
@@ -204,7 +205,6 @@ def send_verification_email(headers, email, proxies, captcha_solution=None, capt
         data['captcha_solution'] = captcha_solution
         data['captcha_id'] = captcha_id
 
-    # ✅ CORRECT ENDPOINT (without /web/)
     url = 'https://www.instagram.com/api/v1/accounts/send_verify_email/'
     response = requests.post(
         url,
@@ -215,11 +215,18 @@ def send_verification_email(headers, email, proxies, captcha_solution=None, capt
     )
     if response.status_code == 200:
         resp_json = response.json()
+        # Log full response for debugging
+        print(f"OTP response JSON: {json.dumps(resp_json, indent=2)}")
         if resp_json.get('email_sent'):
             return True, response.text, headers, None, None
         elif resp_json.get('require_captcha'):
             captcha_url = resp_json.get('captcha_url')
             captcha_id = resp_json.get('captcha_id')
+            # If captcha_url is None or relative, construct it
+            if not captcha_url and captcha_id:
+                captcha_url = f"https://www.instagram.com/api/v1/accounts/get_captcha/?captcha_id={captcha_id}"
+            elif captcha_url and not captcha_url.startswith('http'):
+                captcha_url = f"https://www.instagram.com{captcha_url}"
             return False, "require_captcha", headers, captcha_url, captcha_id
         else:
             return False, f"Response: {response.text[:500]}", headers, None, None
@@ -230,7 +237,7 @@ def send_verification_email(headers, email, proxies, captcha_solution=None, capt
 def validate_otp(headers, email, code, proxies):
     device_id = headers['cookie'].split('mid=')[1].split(';')[0]
     data = {'code': code, 'device_id': device_id, 'email': email}
-    url = 'https://www.instagram.com/api/v1/accounts/check_confirmation_code/'  # no /web/
+    url = 'https://www.instagram.com/api/v1/accounts/check_confirmation_code/'
     response = requests.post(
         url,
         headers=headers,
@@ -522,7 +529,7 @@ def handle_create(message):
             'proxies': proxies,
         }
         return
-    elif response == "require_captcha":
+    elif response == "require_captcha" and captcha_url:
         # Download CAPTCHA image
         try:
             captcha_response = requests.get(captcha_url, proxies=proxies, timeout=30)
@@ -615,5 +622,5 @@ def handle_all_messages(message):
 # ============================================================
 if __name__ == "__main__":
     init_db()
-    print("🤖 Bot started with correct endpoints (no /web/) and CAPTCHA support.")
+    print("🤖 Bot started with fixed CAPTCHA URL (constructs from captcha_id).")
     bot.infinity_polling()
