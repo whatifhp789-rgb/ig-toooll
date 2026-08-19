@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Instagram Account Creator Bot – Rate Limit Bypass + Proxy Management
+# Instagram Account Creator Bot – Rate Limit Bypass Edition
 
 import os
 import random
@@ -9,7 +9,6 @@ import names
 import requests
 import telebot
 import json
-import sqlite3
 
 # ============================================================
 #  🔐 YOUR BOT CREDENTIALS
@@ -19,113 +18,16 @@ OWNER_IDS = [8754004223]                    # <-- Put your Telegram user ID(s)
 # ============================================================
 
 # ============================================================
-#  🗃️ DATABASE SETUP (for proxies)
+#  🌐 PROXY LIST – Add your proxies here
+#  Format: "http://user:pass@ip:port" or "socks5://ip:port"
 # ============================================================
-DB_FILE = "bot_data.db"
-
-def init_db():
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS proxies (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        proxy TEXT UNIQUE,
-        added_at INTEGER
-    )''')
-    conn.commit()
-    conn.close()
-
-def add_proxy_to_db(proxy):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    try:
-        c.execute("INSERT INTO proxies (proxy, added_at) VALUES (?, ?)", (proxy, int(time.time())))
-        conn.commit()
-        return True
-    except sqlite3.IntegrityError:
-        return False
-    finally:
-        conn.close()
-
-def remove_proxy_from_db(proxy):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("DELETE FROM proxies WHERE proxy = ?", (proxy,))
-    conn.commit()
-    affected = c.rowcount
-    conn.close()
-    return affected > 0
-
-def get_all_proxies():
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("SELECT proxy FROM proxies")
-    rows = c.fetchall()
-    conn.close()
-    return [row[0] for row in rows]
-
-def clear_all_proxies():
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("DELETE FROM proxies")
-    conn.commit()
-    conn.close()
-
+PROXY_LIST = [
+    # "http://user1:pass1@123.45.67.89:8080",
+    # "http://user2:pass2@98.76.54.32:3128",
+    # "socks5://user3:pass3@111.222.333.444:1080",
+]
+# If you don't have proxies, leave the list empty – bot will use direct connection.
 # ============================================================
-#  🌐 PROXY PARSER & VALIDATOR (Universal)
-# ============================================================
-def parse_proxy(proxy_str):
-    proxy_str = proxy_str.strip()
-    if proxy_str.startswith(('http://', 'https://', 'socks5://')):
-        return proxy_str
-    parts = proxy_str.split(':')
-    if len(parts) == 4:
-        ip, port, user, passwd = parts
-        return f"http://{user}:{passwd}@{ip}:{port}"
-    if '@' in proxy_str:
-        return f"http://{proxy_str}"
-    if ':' in proxy_str:
-        return f"http://{proxy_str}"
-    return proxy_str
-
-def validate_proxy(proxy_str):
-    parsed = parse_proxy(proxy_str)
-    try:
-        proxies = {"http": parsed, "https": parsed}
-        # Try multiple endpoints
-        test_urls = [
-            "https://httpbin.org/ip",
-            "https://api.ipify.org?format=json",
-            "https://www.instagram.com"
-        ]
-        for url in test_urls:
-            try:
-                response = requests.get(url, proxies=proxies, timeout=10)
-                if response.status_code == 200:
-                    return True, "Proxy is alive."
-            except:
-                continue
-        # If none succeeded, try a HEAD request
-        try:
-            response = requests.head("https://www.google.com", proxies=proxies, timeout=10)
-            if response.status_code < 400:
-                return True, "Proxy is alive (HEAD check)."
-        except:
-            pass
-        # All failed
-        return False, "Proxy is not responding to any test endpoint."
-    except Exception as e:
-        return False, f"Proxy validation error: {str(e)}"
-
-def get_random_proxy():
-    proxies = get_all_proxies()
-    if proxies:
-        return random.choice(proxies)
-    return None
-
-# ============================================================
-#  🌐 PROXY LIST – Legacy (not used, replaced by DB)
-# ============================================================
-# PROXY_LIST = [...]  # removed, now using database
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -136,8 +38,15 @@ USER_AGENTS = [
 ]
 
 # ============================================================
-#  🤖 BOT SETUP
-# ============================================================
+
+proxies = None
+proxy_pool = PROXY_LIST.copy()
+
+def get_random_proxy():
+    if proxy_pool:
+        return random.choice(proxy_pool)
+    return None
+
 def get_random_user_agent():
     return random.choice(USER_AGENTS)
 
@@ -150,16 +59,15 @@ user_sessions = {}
 # ============ CORE FUNCTIONS ============
 
 def get_headers():
-    """Fetch fresh headers with a random user-agent and proxy from database."""
+    """Fetch fresh headers with a random user-agent and proxy."""
     while True:
         try:
             an_agent = get_random_user_agent()
-            # Use a proxy from database
+            # Use a proxy if available
             proxy_str = get_random_proxy()
             local_proxies = None
             if proxy_str:
-                parsed = parse_proxy(proxy_str)
-                local_proxies = {"http": parsed, "https": parsed}
+                local_proxies = {"http": proxy_str, "https": proxy_str}
 
             # Get cookies using a request with the proxy
             r = requests.get(
@@ -340,69 +248,8 @@ def create_instagram_account(headers, email, signup_code, chat_id, proxies):
     bot.send_message(chat_id, "❌ All attempts failed. Try again later with a new proxy or email.")
     return False
 
-# ============================================================
-#  🧰 PROXY MANAGEMENT COMMANDS
-# ============================================================
-@bot.message_handler(commands=['addproxy'])
-def handle_addproxy(message):
-    chat_id = message.chat.id
-    if OWNER_IDS and chat_id not in OWNER_IDS:
-        bot.reply_to(message, "⛔ Unauthorized.")
-        return
-    parts = message.text.split(maxsplit=1)
-    if len(parts) < 2 or not parts[1].strip():
-        bot.reply_to(message, "❌ Usage: `/addproxy <proxy>`\nSupported: `ip:port:user:pass` or `user:pass@ip:port` or `ip:port`")
-        return
-    proxy_str = parts[1].strip()
-    ok, msg = validate_proxy(proxy_str)
-    if not ok:
-        bot.reply_to(message, f"⚠️ Proxy validation warning: {msg}\nStill adding proxy (you can test later).")
-    if add_proxy_to_db(proxy_str):
-        bot.reply_to(message, f"✅ Proxy added successfully!\n{proxy_str}")
-    else:
-        bot.reply_to(message, f"⚠️ Proxy already exists in the list.")
+# ============ BOT HANDLERS ============
 
-@bot.message_handler(commands=['removeproxy'])
-def handle_removeproxy(message):
-    chat_id = message.chat.id
-    if OWNER_IDS and chat_id not in OWNER_IDS:
-        bot.reply_to(message, "⛔ Unauthorized.")
-        return
-    parts = message.text.split(maxsplit=1)
-    if len(parts) < 2 or not parts[1].strip():
-        bot.reply_to(message, "❌ Usage: `/removeproxy <proxy_string>`")
-        return
-    proxy_str = parts[1].strip()
-    if remove_proxy_from_db(proxy_str):
-        bot.reply_to(message, f"✅ Proxy removed: {proxy_str}")
-    else:
-        bot.reply_to(message, f"❌ Proxy not found in the list.")
-
-@bot.message_handler(commands=['listproxies'])
-def handle_listproxies(message):
-    chat_id = message.chat.id
-    if OWNER_IDS and chat_id not in OWNER_IDS:
-        bot.reply_to(message, "⛔ Unauthorized.")
-        return
-    proxies = get_all_proxies()
-    if not proxies:
-        bot.reply_to(message, "📭 No proxies stored.")
-        return
-    msg = "📋 **Stored Proxies:**\n" + "\n".join([f"• {p}" for p in proxies])
-    bot.reply_to(message, msg, parse_mode="Markdown")
-
-@bot.message_handler(commands=['clearproxies'])
-def handle_clearproxies(message):
-    chat_id = message.chat.id
-    if OWNER_IDS and chat_id not in OWNER_IDS:
-        bot.reply_to(message, "⛔ Unauthorized.")
-        return
-    clear_all_proxies()
-    bot.reply_to(message, "🗑️ All proxies cleared.")
-
-# ============================================================
-#  🚀 ACCOUNT CREATION COMMANDS
-# ============================================================
 @bot.message_handler(commands=['start'])
 def handle_start(message):
     chat_id = message.chat.id
@@ -411,14 +258,9 @@ def handle_start(message):
         return
     bot.reply_to(message,
         "🤖 **Instagram Account Creator Bot**\n\n"
-        "📌 **Proxy Management:**\n"
-        "/addproxy <proxy> – add a working proxy\n"
-        "/removeproxy <proxy> – remove a proxy\n"
-        "/listproxies – list all saved proxies\n"
-        "/clearproxies – remove all proxies\n\n"
-        "🚀 **Create Account:**\n"
-        "/create <email> – start account creation\n\n"
-        "Example: `/create test@example.com`"
+        "Send `/create <email>` to start.\n"
+        "Example: `/create test@example.com`\n\n"
+        "Bot will use random proxies and delays to avoid rate limits."
     )
 
 @bot.message_handler(commands=['create'])
@@ -497,10 +339,7 @@ def handle_all_messages(message):
     else:
         bot.reply_to(message, "ℹ️ Use `/create <email>` to start.")
 
-# ============================================================
-#  🏁 MAIN
-# ============================================================
+# ============ MAIN ============
 if __name__ == "__main__":
-    init_db()
-    print("🤖 Bot started with proxy rotation, anti-rate-limit, and proxy management.")
+    print("🤖 Bot started with proxy rotation and anti-rate-limit measures.")
     bot.infinity_polling()
