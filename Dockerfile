@@ -1,5 +1,6 @@
 FROM python:3.12-slim
 
+# Install Chrome and dependencies
 RUN apt-get update && apt-get install -y \
     wget \
     gnupg \
@@ -9,7 +10,9 @@ RUN apt-get update && apt-get install -y \
     && apt-get update && apt-get install -y google-chrome-stable \
     && rm -rf /var/lib/apt/lists/*
 
-RUN wget -O /tmp/chromedriver.zip https://storage.googleapis.com/chrome-for-testing-public/latest/linux64/chromedriver-linux64.zip \
+# Download and install ChromeDriver (auto-fetch latest stable)
+RUN LATEST_VERSION=$(wget -qO- https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions.json | grep -o '"stable":[^,]*' | grep -o '[0-9.]*') \
+    && wget -O /tmp/chromedriver.zip "https://storage.googleapis.com/chrome-for-testing-public/${LATEST_VERSION}/linux64/chromedriver-linux64.zip" \
     && unzip /tmp/chromedriver.zip -d /tmp/ \
     && mv /tmp/chromedriver-linux64/chromedriver /usr/local/bin/chromedriver \
     && chmod +x /usr/local/bin/chromedriver \
