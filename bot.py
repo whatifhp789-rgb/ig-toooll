@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Telegram Bot for Instagram Signup – Multi‑Step, Proxy, Full CAPTCHA Handling
+# Telegram Bot for Instagram Signup – Single‑Page Form, Proxy, CAPTCHA
 
 import os, sys, json, time, random, threading, requests, logging, sqlite3
 from io import BytesIO
@@ -7,7 +7,7 @@ from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeo
 from datetime import datetime
 
 # ====== CHANGE THESE TWO LINES ONLY ======
-BOT_TOKEN = "8760264279:AAHX8amDohMLG_ACvGoftslaXunO4BDoPRk"
+BOT_TOKEN = "8760264279:AAHH7DdJpFCpF7ohl_AnwajqjUxvyegDpyA"
 OWNER_IDS = [8754004223]
 # =======================================
 
@@ -145,7 +145,6 @@ def validate_proxy(proxy_str):
     parsed = parse_proxy(proxy_str)
     if not parsed:
         return False, "Invalid proxy format."
-    # Build proxy URL with auth
     server = parsed["server"]
     auth = ""
     if parsed.get("username"):
@@ -280,7 +279,6 @@ def handle_captcha_telegram(page, session):
     solution = session.captcha_value
     if not solution:
         return False
-    # Try to find input
     captcha_input = page.locator('input[name="captcha"]')
     if not captcha_input.is_visible():
         captcha_input = page.locator('input[name="verification"]')
@@ -341,7 +339,7 @@ def run_automation(chat_id):
                 raise Exception("CAPTCHA failed")
             page.wait_for_load_state("networkidle")
 
-        # Step 1: Fill email/phone and click Next if needed
+        # --- Fill all fields (single-page form) ---
         logger.info("📝 Filling email/phone...")
         email_phone_input = page.locator('input[name="emailOrPhone"]')
         if email_phone_input.is_visible():
@@ -355,41 +353,15 @@ def run_automation(chat_id):
             if phone_input.is_visible() and phone:
                 phone_input.fill(phone)
 
-        # Check if password field is visible; if not, click Next/Continue
-        pwd_input = page.locator('input[name="password"]')
-        if not pwd_input.is_visible():
-            logger.info("Password field not visible, looking for Next/Continue button...")
-            next_btn = page.locator('button[type="submit"]:visible')
-            if not next_btn.is_visible():
-                next_btn = page.get_by_text("Next", exact=True)
-            if not next_btn.is_visible():
-                next_btn = page.get_by_text("Continue", exact=True)
-            if not next_btn.is_visible():
-                next_btn = page.get_by_text("Sign up", exact=True)
-            if not next_btn.is_visible():
-                # fallback: any visible button in form
-                next_btn = page.locator('form button:visible')
-            if next_btn.is_visible():
-                next_btn.click()
-                logger.info("Clicked Next/Continue button.")
-                # Wait for second page to load
-                page.wait_for_load_state("networkidle")
-                # Wait for password field to appear
-                pwd_input.wait_for(timeout=ELEMENT_TIMEOUT)
-                logger.info("Second page loaded, password field now visible.")
-            else:
-                raise Exception("Could not find Next/Continue button and password field not visible.")
-
-        # Step 2: Now fill password, DOB, name, username
         logger.info("📝 Filling password...")
         pwd_input = page.locator('input[name="password"]')
         if pwd_input.is_visible():
             pwd_input.fill(password)
         else:
-            raise Exception("Password field not found even after Next.")
+            raise Exception("Password field not found.")
 
-        # DOB
         logger.info("📝 Filling date of birth...")
+        # Day
         day_input = page.locator('input[name="day"]')
         if day_input.is_visible():
             day_input.fill(str(day))
@@ -403,6 +375,7 @@ def run_automation(chat_id):
                     day_input.fill(str(day))
                 else:
                     raise Exception("Day field not found.")
+        # Month
         month_input = page.locator('input[name="month"]')
         if month_input.is_visible():
             month_input.fill(str(month))
@@ -416,6 +389,7 @@ def run_automation(chat_id):
                     month_input.fill(str(month))
                 else:
                     raise Exception("Month field not found.")
+        # Year
         year_input = page.locator('input[name="year"]')
         if year_input.is_visible():
             year_input.fill(str(year))
@@ -430,7 +404,6 @@ def run_automation(chat_id):
                 else:
                     raise Exception("Year field not found.")
 
-        # Name
         logger.info("📝 Filling full name...")
         name_input = page.locator('input[name="fullName"]')
         if name_input.is_visible():
@@ -438,7 +411,6 @@ def run_automation(chat_id):
         else:
             raise Exception("Full name field not found.")
 
-        # Username
         logger.info("📝 Filling username...")
         username_input = page.locator('input[name="username"]')
         if username_input.is_visible():
@@ -449,7 +421,7 @@ def run_automation(chat_id):
         send_message(chat_id, f"✅ Form filled.\nEmail/Phone: {login_value}\nName: {full_name}\nUsername: {username}\nDOB: {day}/{month}/{year}")
         logger.info("All fields filled.")
 
-        # Submit
+        # Submit the form
         logger.info("🔘 Clicking Submit...")
         submit_btn = page.locator('button[type="submit"]:visible')
         if submit_btn.is_visible():
@@ -479,7 +451,7 @@ def run_automation(chat_id):
                 raise Exception("CAPTCHA after submit")
             page.wait_for_load_state("networkidle")
 
-        # Wait for OTP
+        # Wait for OTP page
         logger.info("⏳ Waiting for OTP page...")
         otp_input = page.locator('input[name="code"]')
         otp_input.wait_for(timeout=ELEMENT_TIMEOUT)
