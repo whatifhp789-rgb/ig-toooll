@@ -1,42 +1,27 @@
 #!/usr/bin/env python3
 # Telegram Bot for Instagram Signup – Email via Command, Fixed Password
 
-import os
-import sys
-import json
-import time
-import random
-import threading
-import requests
-import logging
-import sqlite3
+import os, sys, json, time, random, threading, requests, logging, sqlite3
 from io import BytesIO
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 
-# ========== HARDCODED CREDENTIALS ==========
-BOT_TOKEN = "8760264279:AAHOWTl_pokPjXbQgo25Et8gIy8ISkjJTkE"           # <-- Change this
-OWNER_IDS = [8754004223]                     # <-- Change this (list of ints)
-# Password is fixed – no need to change
+# ====== CHANGE THESE TWO LINES ======
+BOT_TOKEN = "8760264279:AAHOWTl_pokPjXbQgo25Et8gIy8ISkjJTkE"      # <--- put your token
+OWNER_IDS = [8754004223]                # <--- put your Telegram user ID (as int)
+# ===================================
+
 FIXED_PASSWORD = "qwerty9900@"
-
-# Instagram URL
 INSTA_URL = "https://www.instagram.com/accounts/emailsignup/"
-PHONE = ""                                  # Leave empty (using email)
-FULL_NAME = ""                              # Leave empty for random Indian name
-
-# Proxy (optional)
-PROXY_SERVER = ""
-PROXY_USER = ""
-PROXY_PASS = ""
-
+PHONE = ""
+FULL_NAME = ""
+PROXY_SERVER = PROXY_USER = PROXY_PASS = ""
 NAV_TIMEOUT = 30000
 ELEMENT_TIMEOUT = 10000
 
-# ========== LOGGING & DB ==========
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
-
 DB_FILE = "bot_state.db"
+API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
 def init_db():
     conn = sqlite3.connect(DB_FILE)
@@ -61,18 +46,18 @@ def set_email(chat_id, email):
     conn.commit()
     conn.close()
 
-# ========== RANDOM INDIAN NAME GENERATOR ==========
+# Random Indian name generator
 INDIAN_FIRST_NAMES = [
-    "Aarav", "Vivaan", "Aditya", "Vihaan", "Arjun", "Sai", "Pranav", "Dhruv",
-    "Krishna", "Shaurya", "Aryan", "Ishaan", "Reyansh", "Ayaan", "Ananya",
-    "Diya", "Ishita", "Aadhya", "Myra", "Sara", "Anvi", "Vedika", "Kavya",
-    "Riya", "Anika", "Sana", "Ira", "Alisha", "Tara", "Zara", "Arya",
-    "Rohan", "Kabir", "Amit", "Rahul", "Priya", "Neha", "Pooja", "Sneha"
+    "Aarav","Vivaan","Aditya","Vihaan","Arjun","Sai","Pranav","Dhruv",
+    "Krishna","Shaurya","Aryan","Ishaan","Reyansh","Ayaan","Ananya",
+    "Diya","Ishita","Aadhya","Myra","Sara","Anvi","Vedika","Kavya",
+    "Riya","Anika","Sana","Ira","Alisha","Tara","Zara","Arya",
+    "Rohan","Kabir","Amit","Rahul","Priya","Neha","Pooja","Sneha"
 ]
 INDIAN_SURNAMES = [
-    "Sharma", "Verma", "Patel", "Singh", "Kumar", "Gupta", "Joshi", "Rao",
-    "Reddy", "Nair", "Menon", "Pillai", "Iyer", "Mishra", "Tripathi", "Dubey",
-    "Pandey", "Chaudhary", "Yadav", "Saini", "Jain", "Mehta", "Shah", "Desai"
+    "Sharma","Verma","Patel","Singh","Kumar","Gupta","Joshi","Rao",
+    "Reddy","Nair","Menon","Pillai","Iyer","Mishra","Tripathi","Dubey",
+    "Pandey","Chaudhary","Yadav","Saini","Jain","Mehta","Shah","Desai"
 ]
 
 def random_indian_name():
@@ -83,8 +68,6 @@ def generate_username(full_name):
     return f"{base}{random.randint(100, 999)}"
 
 # ========== TELEGRAM HELPERS ==========
-API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
-
 def call_telegram(method, **kwargs):
     url = f"{API_URL}/{method}"
     try:
@@ -128,7 +111,7 @@ def send_photo(chat_id, photo_bytes, caption=None):
         logger.error(f"send_photo exception: {e}")
         return None
 
-# ========== AUTOMATION STATE ==========
+# ========== AUTOMATION ==========
 class AutomationSession:
     def __init__(self, chat_id):
         self.chat_id = chat_id
@@ -136,14 +119,12 @@ class AutomationSession:
         self.otp_value = None
         self.captcha_event = threading.Event()
         self.captcha_value = None
-        self.captcha_image_bytes = None
         self.running = False
         self.result = None
 
 sessions = {}
 sessions_lock = threading.Lock()
 
-# ========== BROWSER & AUTOMATION ==========
 def start_browser():
     playwright = sync_playwright().start()
     proxy = None
@@ -177,28 +158,22 @@ def detect_captcha(page):
 
 def handle_captcha_telegram(page, session):
     screenshot_bytes = page.screenshot(full_page=True)
-    session.captcha_image_bytes = screenshot_bytes
     session.captcha_event.clear()
-    send_photo(
-        session.chat_id,
-        screenshot_bytes,
-        caption="🧩 CAPTCHA detected. Reply with the text you see."
-    )
+    send_photo(session.chat_id, screenshot_bytes, caption="🧩 CAPTCHA detected. Reply with the text.")
     if not session.captcha_event.wait(timeout=120):
         send_message(session.chat_id, "⏰ CAPTCHA timeout.")
         return False
     solution = session.captcha_value
     if not solution:
-        send_message(session.chat_id, "❌ Empty solution.")
         return False
     captcha_input = page.locator('input[name="captcha"]')
     if not captcha_input.is_visible():
         captcha_input = page.locator('input[name="verification"]')
     if captcha_input.is_visible():
         captcha_input.fill(solution)
-        submit_captcha = page.locator('button[type="submit"]:visible')
-        if submit_captcha.count() > 0:
-            submit_captcha.click()
+        submit = page.locator('button[type="submit"]:visible')
+        if submit.count() > 0:
+            submit.click()
         send_message(session.chat_id, "✅ CAPTCHA solved.")
         return True
     else:
@@ -210,23 +185,18 @@ def run_automation(chat_id):
     if not session:
         return
     session.running = True
-    session.result = None
-
-    # Get stored email for this chat
     email = get_email(chat_id)
     if not email:
-        send_message(chat_id, "❌ No email set. Use /setemail <your_email> first.")
+        send_message(chat_id, "❌ No email set. Use /setemail <email>")
         session.running = False
         return
-
-    # Use fixed password
     password = FIXED_PASSWORD
     full_name = FULL_NAME if FULL_NAME else random_indian_name()
     username = generate_username(full_name)
 
     try:
         playwright, browser, page = start_browser()
-        send_message(chat_id, "🚀 Browser launched. Starting signup...")
+        send_message(chat_id, "🚀 Starting...")
 
         page.goto(INSTA_URL, timeout=NAV_TIMEOUT)
         page.wait_for_load_state("networkidle")
@@ -234,9 +204,7 @@ def run_automation(chat_id):
         if detect_captcha(page):
             if not handle_captcha_telegram(page, session):
                 raise Exception("CAPTCHA failed")
-            page.wait_for_load_state("networkidle")
 
-        # Fill form with email and fixed password
         email_phone = page.locator('input[name="emailOrPhone"]')
         if email_phone.is_visible():
             email_phone.fill(email)
@@ -275,8 +243,7 @@ def run_automation(chat_id):
         page.wait_for_load_state("networkidle")
         if detect_captcha(page):
             if not handle_captcha_telegram(page, session):
-                raise Exception("CAPTCHA after submit failed")
-            page.wait_for_load_state("networkidle")
+                raise Exception("CAPTCHA after submit")
 
         send_message(chat_id, "⏳ Waiting for OTP...")
         otp_input = page.locator('input[name="code"]')
@@ -284,7 +251,6 @@ def run_automation(chat_id):
 
         session.otp_event.clear()
         send_message(chat_id, "🔑 OTP sent. Reply with 6-digit code.")
-
         if not session.otp_event.wait(timeout=120):
             raise TimeoutError("OTP timeout")
         otp = session.otp_value
@@ -302,13 +268,12 @@ def run_automation(chat_id):
             else:
                 raise Exception("Verify button not found.")
 
-        # Check result
         try:
             page.wait_for_url("**/accounts/emailsignup/**", timeout=5000, state='detached')
             page.wait_for_load_state("networkidle")
             url = page.url
             if "instagram.com" in url and "/accounts/" not in url:
-                result_msg = f"✅ SUCCESS – Account created for {full_name} (Username: {username})"
+                result_msg = f"✅ SUCCESS – {full_name} (Username: {username})"
                 session.result = "success"
             else:
                 error = page.locator('text="Something went wrong"')
@@ -335,7 +300,7 @@ def run_automation(chat_id):
         session.running = False
         send_message(chat_id, "🏁 Finished.")
 
-# ========== TELEGRAM HANDLERS ==========
+# ========== HANDLERS ==========
 def handle_message(msg):
     chat_id = msg.get('chat', {}).get('id')
     if not chat_id:
@@ -386,9 +351,8 @@ def handle_message(msg):
                 send_message(chat_id, "Usage: /setemail <your_email@example.com>")
                 return
             new_email = parts[1].strip()
-            # Simple validation
             if '@' not in new_email or '.' not in new_email:
-                send_message(chat_id, "❌ Invalid email address.")
+                send_message(chat_id, "❌ Invalid email.")
                 return
             set_email(chat_id, new_email)
             send_message(chat_id, f"✅ Email set to: {new_email}")
@@ -405,7 +369,7 @@ def handle_message(msg):
     else:
         send_message(chat_id, "Use commands.")
 
-# ========== POLLING LOOP ==========
+# ========== POLLING ==========
 def polling_loop():
     offset = 0
     logger.info("Polling loop started.")
@@ -430,7 +394,6 @@ def polling_loop():
                     offset = update_id + 1
                     if 'message' in update:
                         handle_message(update['message'])
-            # Update offset after each loop
             if data.get('result'):
                 last = data['result'][-1]['update_id']
                 if last >= offset:
