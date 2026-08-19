@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Instagram Account Creator Bot – Fixed 404 OTP
+# Instagram Account Creator Bot – Final 404 Fix
 
 import os
 import random
@@ -16,12 +16,12 @@ from io import BytesIO
 # ============================================================
 #  🔐 YOUR BOT CREDENTIALS
 # ============================================================
-BOT_TOKEN = "8760264279:AAHhaHYLObOhbe9NPWGk91k0OiXqDuDCHO4"          # <-- Put your bot token
-OWNER_IDS = [8754004223]                    # <-- Put your Telegram user ID(s)
+BOT_TOKEN = "8760264279:AAHhaHYLObOhbe9NPWGk91k0OiXqDuDCHO4"
+OWNER_IDS = [8754004223]
 # ============================================================
 
 # ============================================================
-#  🗃️ DATABASE SETUP (for proxies)
+#  🗃️ DATABASE (proxies)
 # ============================================================
 DB_FILE = "bot_data.db"
 
@@ -73,7 +73,7 @@ def clear_all_proxies():
     conn.close()
 
 # ============================================================
-#  🌐 UNIVERSAL PROXY PARSER
+#  🌐 PROXY PARSER
 # ============================================================
 def parse_proxy(proxy_str):
     proxy_str = proxy_str.strip()
@@ -108,7 +108,7 @@ def get_random_proxy():
     return None
 
 # ============================================================
-#  🧑 INDIAN NAMES & DOB
+#  🧑 INDIAN NAMES
 # ============================================================
 INDIAN_FIRST_NAMES = [
     "Aarav","Vivaan","Aditya","Vihaan","Arjun","Sai","Pranav","Dhruv",
@@ -134,7 +134,7 @@ def random_dob():
     return day, month, year
 
 # ============================================================
-#  🤖 BOT SETUP
+#  🤖 BOT
 # ============================================================
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -152,37 +152,36 @@ def get_random_user_agent():
 def get_random_delay():
     return random.randint(10, 30)
 
-# ============ HEADER FETCH & OTP SEND ============
+# ============ EXACT HEADER FETCH (as in original script) ============
 def get_headers_and_session():
-    """Fetch fresh headers and session using a random proxy."""
+    """Exactly like the original CLI's get_headers() – returns headers and a session."""
     while True:
         try:
             an_agent = get_random_user_agent()
-            proxy_raw = get_random_proxy()
+            proxy_str = get_random_proxy()
             proxies = None
-            if proxy_raw:
-                parsed = parse_proxy(proxy_raw)
+            if proxy_str:
+                parsed = parse_proxy(proxy_str)
                 proxies = {"http": parsed, "https": parsed}
 
-            # Create a session to persist cookies
+            # We use a new session
             session = requests.Session()
             session.headers.update({'user-agent': an_agent})
             if proxies:
                 session.proxies.update(proxies)
 
-            # Step 1: Get cookies from login/ajax
+            # Step 1: get cookies from login/ajax
             r = session.get('https://www.instagram.com/api/v1/web/accounts/login/ajax/')
-            # This should set csrftoken, mid, ig_did in cookies
             csrftoken = session.cookies.get('csrftoken')
             mid = session.cookies.get('mid')
             ig_did = session.cookies.get('ig_did')
 
             if not csrftoken:
-                print("Failed to get csrftoken, retrying...")
+                print("No csrftoken, retrying...")
                 time.sleep(2)
                 continue
 
-            # Step 2: Get main page to extract APP_ID and rollout_hash
+            # Step 2: get main page for APP_ID and rollout_hash
             response1 = session.get('https://www.instagram.com/')
             appid = "936619743392459"  # fallback
             rollout = "1"
@@ -195,6 +194,7 @@ def get_headers_and_session():
             except:
                 pass
 
+            # Build headers
             headers = {
                 'authority': 'www.instagram.com',
                 'accept': '*/*',
@@ -216,36 +216,30 @@ def get_headers_and_session():
             time.sleep(5)
 
 def send_verification_email(session, headers, email, proxies):
-    """Send OTP using the correct endpoint and device_id."""
-    # Device ID is the ig_did from cookies
-    device_id = session.cookies.get('ig_did') or headers.get('x-web-device-id')
+    """Send OTP – uses the same endpoint and data as original."""
+    # Device ID: from ig_did (or mid)
+    device_id = session.cookies.get('ig_did') or headers.get('x-web-device-id') or session.cookies.get('mid')
     if not device_id:
-        # fallback: generate a random one
         device_id = ''.join(random.choices(string.digits, k=16))
 
     data = {'device_id': device_id, 'email': email}
-    # Try with trailing slash and without
-    urls = [
-        'https://www.instagram.com/api/v1/web/accounts/send_verify_email/',
-        'https://www.instagram.com/api/v1/web/accounts/send_verify_email'
-    ]
-    for url in urls:
-        try:
-            response = session.post(url, headers=headers, data=data, timeout=30)
-            if response.status_code == 200:
-                resp_json = response.json()
-                if resp_json.get('email_sent') or 'email_sent":true' in response.text:
-                    return True, response.text, headers
-                else:
-                    # Some other error
-                    return False, f"Response: {response.text[:500]}", headers
+    url = 'https://www.instagram.com/api/v1/web/accounts/send_verify_email/'
+
+    try:
+        response = session.post(url, headers=headers, data=data, timeout=30)
+        # Log full response for debugging
+        print(f"OTP response status: {response.status_code}")
+        print(f"OTP response text: {response.text[:500]}")
+        if response.status_code == 200:
+            resp_json = response.json()
+            if resp_json.get('email_sent') or 'email_sent":true' in response.text:
+                return True, response.text, headers
             else:
-                # Not 200, try next URL
-                continue
-        except Exception as e:
-            continue
-    # All attempts failed
-    return False, f"Status: 404 (both endpoints failed)", headers
+                return False, f"Response: {response.text[:500]}", headers
+        else:
+            return False, f"Status: {response.status_code}, Response: {response.text[:500]}", headers
+    except Exception as e:
+        return False, str(e), headers
 
 def validate_otp(session, headers, email, code, proxies):
     try:
@@ -295,7 +289,7 @@ def create_instagram_account(headers, email, signup_code, chat_id, proxies, sess
         'month': month,
         'day': day,
         'year': year,
-        'client_id': headers.get('x-web-device-id') or ''.join(random.choices(string.digits, k=16)),
+        'client_id': session.cookies.get('ig_did') or headers.get('x-web-device-id') or ''.join(random.choices(string.digits, k=16)),
         'seamless_login_enabled': '1',
         'tos_version': 'row',
         'force_sign_up_code': signup_code,
@@ -310,7 +304,7 @@ def create_instagram_account(headers, email, signup_code, chat_id, proxies, sess
 
             if attempt > 1:
                 headers, session, proxies = get_headers_and_session()
-                data['client_id'] = headers.get('x-web-device-id')
+                data['client_id'] = session.cookies.get('ig_did') or headers.get('x-web-device-id')
                 if attempt > 3:
                     full_name = random_indian_name()
                     firstname = full_name.split()[0]
@@ -399,7 +393,7 @@ def generate_username(firstname):
     return f"{base}_{suffix}"
 
 # ============================================================
-#  🧰 PROXY MANAGEMENT COMMANDS
+#  PROXY MANAGEMENT COMMANDS
 # ============================================================
 @bot.message_handler(commands=['addproxy'])
 def handle_addproxy(message):
@@ -409,7 +403,7 @@ def handle_addproxy(message):
         return
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2 or not parts[1].strip():
-        bot.reply_to(message, "❌ Usage: `/addproxy <proxy>`\nSupported formats:\n• `ip:port:user:pass`\n• `user:pass@ip:port`\n• `ip:port`")
+        bot.reply_to(message, "❌ Usage: `/addproxy <proxy>`\nSupported: `ip:port:user:pass` or `user:pass@ip:port` or `ip:port`")
         return
     proxy_str = parts[1].strip()
     ok, msg = validate_proxy(proxy_str)
@@ -489,7 +483,7 @@ def handle_photo(message):
     bot.reply_to(message, "✅ Profile picture saved! It will be used for your next account creation.")
 
 # ============================================================
-#  🚀 ACCOUNT CREATION COMMANDS
+#  🚀 ACCOUNT CREATION
 # ============================================================
 @bot.message_handler(commands=['start'])
 def handle_start(message):
@@ -544,19 +538,11 @@ def handle_create(message):
             }
             return
         else:
-            # Log the actual response for debugging
-            print(f"OTP attempt {attempt+1}: {response_text}")
-            if "Status: 404" in response_text:
-                bot.send_message(chat_id, f"⚠️ OTP failed (404). Refreshing headers and retrying...")
-                time.sleep(5)
-                continue
-            else:
-                if attempt < 4:
-                    bot.send_message(chat_id, f"⚠️ OTP failed (attempt {attempt+1}). Retrying...")
-                    time.sleep(10)
-                else:
-                    bot.send_message(chat_id, f"❌ Failed to send OTP after multiple attempts.\n{response_text}")
-                    return
+            # Send the error message to the user for diagnosis
+            bot.send_message(chat_id, f"⚠️ OTP attempt {attempt+1} failed.\nResponse: {response_text[:300]}")
+            time.sleep(5)
+
+    bot.send_message(chat_id, "❌ All OTP attempts failed. Check logs for details.")
 
 @bot.message_handler(func=lambda msg: True)
 def handle_all_messages(message):
@@ -597,5 +583,5 @@ def handle_all_messages(message):
 # ============================================================
 if __name__ == "__main__":
     init_db()
-    print("🤖 Bot started with improved OTP sending (supports both endpoints).")
+    print("🤖 Bot started with exact original header fetch.")
     bot.infinity_polling()
