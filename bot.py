@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Instagram Account Creator Bot – CAPTCHA URL Fix
+# Instagram Account Creator Bot – Robust CAPTCHA Handling
 
 import os
 import random
@@ -15,7 +15,7 @@ from io import BytesIO
 # ============================================================
 #  🔐 YOUR BOT CREDENTIALS
 # ============================================================
-BOT_TOKEN = "8760264279:AAFK8xdOkJFgEiZO0l7q5785w6aavxIz3jQ"
+BOT_TOKEN = "8760264279:AAFmr6hb-Uspz1pKR3xclQHP8aFsfF-4-yY"
 OWNER_IDS = [8754004223]
 # ============================================================
 
@@ -151,7 +151,7 @@ def get_random_user_agent():
 def get_random_delay():
     return random.randint(10, 30)
 
-# ============ HEADER FETCH (original) ============
+# ============ HEADER FETCH ============
 def get_headers():
     while True:
         try:
@@ -197,7 +197,7 @@ def get_headers():
             print(f"Header fetch error: {e}")
             time.sleep(5)
 
-# ============ OTP SEND WITH CAPTCHA (CORRECT ENDPOINT) ============
+# ============ OTP SEND ============
 def send_verification_email(headers, email, proxies, captcha_solution=None, captcha_id=None):
     device_id = headers['cookie'].split('mid=')[1].split(';')[0]
     data = {'device_id': device_id, 'email': email}
@@ -215,25 +215,39 @@ def send_verification_email(headers, email, proxies, captcha_solution=None, capt
     )
     if response.status_code == 200:
         resp_json = response.json()
-        # Log full response for debugging
         print(f"OTP response JSON: {json.dumps(resp_json, indent=2)}")
         if resp_json.get('email_sent'):
             return True, response.text, headers, None, None
         elif resp_json.get('require_captcha'):
+            # Try to get captcha_url from response
             captcha_url = resp_json.get('captcha_url')
             captcha_id = resp_json.get('captcha_id')
-            # If captcha_url is None or relative, construct it
-            if not captcha_url and captcha_id:
-                captcha_url = f"https://www.instagram.com/api/v1/accounts/get_captcha/?captcha_id={captcha_id}"
-            elif captcha_url and not captcha_url.startswith('http'):
-                captcha_url = f"https://www.instagram.com{captcha_url}"
+            # If captcha_url is missing, we'll fetch from standard endpoint
             return False, "require_captcha", headers, captcha_url, captcha_id
         else:
             return False, f"Response: {response.text[:500]}", headers, None, None
     else:
         return False, f"Status: {response.status_code}, Response: {response.text[:500]}", headers, None, None
 
-# ============ OTP VALIDATION (CORRECT ENDPOINT) ============
+def get_captcha_image(headers, proxies, captcha_id=None):
+    """Fetch CAPTCHA image from Instagram."""
+    # Try to get from captcha endpoint
+    url = 'https://www.instagram.com/api/v1/accounts/get_captcha/'
+    if captcha_id:
+        # Some APIs allow passing captcha_id as parameter
+        # but we'll just make a GET request with the headers
+        pass
+    try:
+        response = requests.get(url, headers=headers, proxies=proxies, timeout=30)
+        if response.status_code == 200:
+            # Content is image bytes
+            return True, response.content
+        else:
+            return False, f"Status: {response.status_code}"
+    except Exception as e:
+        return False, str(e)
+
+# ============ OTP VALIDATION ============
 def validate_otp(headers, email, code, proxies):
     device_id = headers['cookie'].split('mid=')[1].split(';')[0]
     data = {'code': code, 'device_id': device_id, 'email': email}
@@ -529,26 +543,44 @@ def handle_create(message):
             'proxies': proxies,
         }
         return
-    elif response == "require_captcha" and captcha_url:
-        # Download CAPTCHA image
-        try:
-            captcha_response = requests.get(captcha_url, proxies=proxies, timeout=30)
-            if captcha_response.status_code == 200:
-                # Send to user
-                captcha_image = BytesIO(captcha_response.content)
-                bot.send_photo(chat_id, captcha_image, caption=f"🧩 **CAPTCHA Required**\nPlease enter the text you see in the image.\n\nType the text as a reply to this message.")
-                user_sessions[chat_id] = {
-                    'state': 'waiting_captcha',
-                    'email': email,
-                    'headers': headers,
-                    'proxies': proxies,
-                    'captcha_id': captcha_id,
-                    'captcha_url': captcha_url,
-                }
-            else:
-                bot.send_message(chat_id, f"❌ Failed to download CAPTCHA image. Status: {captcha_response.status_code}")
-        except Exception as e:
-            bot.send_message(chat_id, f"❌ Error downloading CAPTCHA: {str(e)}")
+    elif response == "require_captcha":
+        # Try to get CAPTCHA image
+        # First try using captcha_url if provided
+        if captcha_url:
+            try:
+                captcha_response = requests.get(captcha_url, proxies=proxies, timeout=30)
+                if captcha_response.status_code == 200:
+                    captcha_image = BytesIO(captcha_response.content)
+                    bot.send_photo(chat_id, captcha_image, caption="🧩 **CAPTCHA Required**\nPlease enter the text you see in the image.\n\nReply with the text.")
+                    user_sessions[chat_id] = {
+                        'state': 'waiting_captcha',
+                        'email': email,
+                        'headers': headers,
+                        'proxies': proxies,
+                        'captcha_id': captcha_id,
+                        'captcha_url': captcha_url,
+                    }
+                    return
+                else:
+                    bot.send_message(chat_id, f"❌ Failed to download CAPTCHA (status {captcha_response.status_code}). Trying alternative...")
+            except Exception as e:
+                bot.send_message(chat_id, f"❌ Error downloading CAPTCHA: {str(e)}. Trying alternative...")
+
+        # Alternative: fetch from standard endpoint
+        ok, data = get_captcha_image(headers, proxies, captcha_id)
+        if ok:
+            captcha_image = BytesIO(data)
+            bot.send_photo(chat_id, captcha_image, caption="🧩 **CAPTCHA Required**\nPlease enter the text you see in the image.\n\nReply with the text.")
+            user_sessions[chat_id] = {
+                'state': 'waiting_captcha',
+                'email': email,
+                'headers': headers,
+                'proxies': proxies,
+                'captcha_id': captcha_id,  # might be None
+                'captcha_url': None,
+            }
+        else:
+            bot.send_message(chat_id, f"❌ Could not retrieve CAPTCHA image.\nError: {data}")
     else:
         bot.send_message(chat_id, f"❌ Failed to send OTP.\n{response}")
 
@@ -571,7 +603,7 @@ def handle_all_messages(message):
         headers = session_data['headers']
         email = session_data['email']
         proxies = session_data.get('proxies')
-        captcha_id = session_data['captcha_id']
+        captcha_id = session_data.get('captcha_id')
 
         success, response, headers, _, _ = send_verification_email(headers, email, proxies, solution, captcha_id)
 
@@ -586,7 +618,7 @@ def handle_all_messages(message):
         else:
             if response == "require_captcha":
                 bot.send_message(chat_id, "❌ CAPTCHA solution was incorrect. Please try again with a new image.")
-                # For simplicity, we reset the state and ask user to restart
+                # Remove session to let user retry
                 del user_sessions[chat_id]
             else:
                 bot.send_message(chat_id, f"❌ Failed to send OTP after CAPTCHA.\n{response}")
@@ -622,5 +654,5 @@ def handle_all_messages(message):
 # ============================================================
 if __name__ == "__main__":
     init_db()
-    print("🤖 Bot started with fixed CAPTCHA URL (constructs from captcha_id).")
+    print("🤖 Bot started with robust CAPTCHA handling (fallback to get_captcha endpoint).")
     bot.infinity_polling()
