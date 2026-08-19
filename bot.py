@@ -1,10 +1,17 @@
 #!/usr/bin/env python3
-# Telegram Bot for Instagram Signup – Final Working Version
+# Telegram Bot for Instagram Signup – Selenium Edition (Final Fix)
 
 import os, sys, json, time, random, threading, requests, logging, sqlite3
 from io import BytesIO
-from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 from datetime import datetime
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException, NoSuchElementException
+from webdriver_manager.chrome import ChromeDriverManager
+from selenium.webdriver.chrome.service import Service as ChromeService
+from selenium.webdriver.chrome.options import Options
 
 # ====== CHANGE THESE TWO LINES ONLY ======
 BOT_TOKEN = "8760264279:AAHH7DdJpFCpF7ohl_AnwajqjUxvyegDpyA"
@@ -13,14 +20,15 @@ OWNER_IDS = [8754004223]
 
 FIXED_PASSWORD = "qwerty9900"
 INSTA_URL = "https://www.instagram.com/accounts/emailsignup/"
-NAV_TIMEOUT = 30000
-ELEMENT_TIMEOUT = 10000
+NAV_TIMEOUT = 30          # seconds
+ELEMENT_TIMEOUT = 15
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 DB_FILE = "bot_state.db"
 API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
+# -------------------- DB helpers --------------------
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -217,140 +225,7 @@ def edit_message_text(chat_id, message_id, text, reply_markup=None):
         payload["reply_markup"] = reply_markup
     return call_telegram("editMessageText", **payload)
 
-# ====================== ULTRA-ROBUST DOB FIELD HELPER ======================
-def fill_dob_field(page, field, value, order_index):
-    """
-    Fill a DOB field (Day, Month, Year) using multiple strategies.
-    order_index: 0 for Day, 1 for Month, 2 for Year.
-    """
-    logger.info(f"Searching for {field} field...")
-
-    # ---- Strategy 1: get_by_label ----
-    try:
-        element = page.get_by_label(field, exact=True)
-        if element.is_visible():
-            if element.evaluate('el => el.tagName.toLowerCase()') == 'select':
-                element.select_option(str(value))
-            else:
-                element.fill(str(value))
-            logger.info(f"✅ Filled {field} using get_by_label")
-            return True
-    except:
-        pass
-
-    # ---- Strategy 2: by name, id, placeholder (both input/select) ----
-    selectors = []
-    for tag in ['input', 'select']:
-        selectors.append(f'{tag}[name="{field.lower()}"]')
-        selectors.append(f'{tag}[id*="{field.lower()}" i]')
-        selectors.append(f'{tag}[placeholder*="{field}" i]')
-        selectors.append(f'{tag}[aria-label*="{field}" i]')
-    if field.lower() == 'day':
-        selectors.append('input[placeholder*="DD" i]')
-        selectors.append('select[placeholder*="DD" i]')
-    elif field.lower() == 'month':
-        selectors.append('input[placeholder*="MM" i]')
-        selectors.append('select[placeholder*="MM" i]')
-    elif field.lower() == 'year':
-        selectors.append('input[placeholder*="YYYY" i]')
-        selectors.append('select[placeholder*="YYYY" i]')
-
-    for sel in selectors:
-        try:
-            element = page.locator(sel)
-            if element.is_visible():
-                tag = element.evaluate('el => el.tagName.toLowerCase()')
-                if tag == 'select':
-                    element.select_option(str(value))
-                else:
-                    element.fill(str(value))
-                logger.info(f"✅ Filled {field} using selector: {sel}")
-                return True
-        except:
-            continue
-
-    # ---- Strategy 3: XPath based on label ----
-    xpath = f'//label[contains(text(), "{field}")]/following::input[1]'
-    try:
-        element = page.locator(f'xpath={xpath}')
-        if element.is_visible():
-            element.fill(str(value))
-            logger.info(f"✅ Filled {field} using XPath: {xpath}")
-            return True
-    except:
-        pass
-    xpath_sel = f'//label[contains(text(), "{field}")]/following::select[1]'
-    try:
-        element = page.locator(f'xpath={xpath_sel}')
-        if element.is_visible():
-            element.select_option(str(value))
-            logger.info(f"✅ Filled {field} using XPath: {xpath_sel}")
-            return True
-    except:
-        pass
-
-    # ---- Strategy 4: label + sibling ----
-    for tag in ['input', 'select']:
-        try:
-            element = page.locator(f'label:has-text("{field}") + {tag}')
-            if element.is_visible():
-                if tag == 'select':
-                    element.select_option(str(value))
-                else:
-                    element.fill(str(value))
-                logger.info(f"✅ Filled {field} using label + {tag}")
-                return True
-        except:
-            pass
-
-    # ---- Strategy 5: fallback using password field index ----
-    try:
-        all_fields = page.locator('input:visible, select:visible').all()
-        visible_fields = []
-        for el in all_fields:
-            tag = el.evaluate('el => el.tagName.toLowerCase()')
-            type_attr = el.get_attribute('type') or ''
-            if tag == 'input' and type_attr in ['submit', 'button', 'hidden', 'checkbox', 'radio']:
-                continue
-            if tag == 'input' and type_attr == 'password':
-                continue
-            visible_fields.append(el)
-
-        # Find password field index
-        password_field = page.locator('input[type="password"]').first
-        if password_field.is_visible():
-            password_index = None
-            for idx, el in enumerate(visible_fields):
-                if el.get_attribute('type') == 'password':
-                    password_index = idx
-                    break
-            if password_index is not None and password_index + 3 < len(visible_fields):
-                target_index = password_index + order_index + 1
-                if target_index < len(visible_fields):
-                    element = visible_fields[target_index]
-                    tag = element.evaluate('el => el.tagName.toLowerCase()')
-                    if tag == 'select':
-                        element.select_option(str(value))
-                    else:
-                        element.fill(str(value))
-                    logger.info(f"✅ Filled {field} using password-based index {target_index}")
-                    return True
-    except Exception as e:
-        logger.warning(f"Password-based fallback failed: {e}")
-
-    # ---- If all fails, log all visible fields and raise error ----
-    try:
-        all_fields_html = page.locator('input:visible, select:visible').all()
-        logger.error("All visible input/select elements:")
-        for idx, el in enumerate(all_fields_html):
-            tag = el.evaluate('el => el.tagName.toLowerCase()')
-            attrs = el.evaluate('el => ({name: el.name, id: el.id, placeholder: el.placeholder, type: el.type, className: el.className})')
-            logger.error(f"  {idx}: {tag} -> {attrs}")
-    except:
-        pass
-    raise Exception(f"{field} field not found after trying all strategies.")
-
-# -------------------- Automation --------------------
+# -------------------- Selenium Automation --------------------
 class AutomationSession:
     def __init__(self, chat_id):
         self.chat_id = chat_id
@@ -366,46 +241,51 @@ sessions = {}
 sessions_lock = threading.Lock()
 
 def start_browser(proxy_str=None):
-    logger.info("🔄 Starting Playwright...")
-    playwright = sync_playwright().start()
-    proxy = None
+    options = Options()
+    options.add_argument("--headless=new")
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--window-size=1280,720")
+    options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+    # Proxy
     if proxy_str:
         parsed = parse_proxy(proxy_str)
         if parsed:
-            proxy = parsed
-            logger.info(f"Using proxy: {proxy_str}")
+            server = parsed["server"]
+            auth = ""
+            if parsed.get("username"):
+                auth = f"{parsed['username']}:{parsed.get('password','')}@"
+            proxy_url = server.replace('://', f'://{auth}')
+            options.add_argument(f'--proxy-server={proxy_url}')
+            logger.info(f"Using proxy: {proxy_url}")
         else:
-            logger.warning(f"Invalid proxy string, ignoring.")
-    logger.info("🔄 Launching Chromium (headless)...")
-    browser = playwright.chromium.launch(
-        headless=True,
-        # If you want to use Google Chrome instead of Chromium, uncomment the next line and comment the one above.
-        # channel="chrome",   # <-- requires Chrome installed
-        args=['--disable-blink-features=AutomationControlled', '--disable-dev-shm-usage']
+            logger.warning("Invalid proxy, ignoring.")
+    driver = webdriver.Chrome(
+        service=ChromeService(ChromeDriverManager().install()),
+        options=options
     )
-    context = browser.new_context(
-        proxy=proxy,
-        viewport={'width': 1280, 'height': 720},
-        user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    )
-    page = context.new_page()
-    logger.info("✅ Browser ready.")
-    return playwright, browser, page
+    driver.set_page_load_timeout(NAV_TIMEOUT)
+    driver.implicitly_wait(ELEMENT_TIMEOUT)
+    return driver
 
-def detect_captcha(page):
-    iframes = page.locator('iframe')
-    for i in range(iframes.count()):
-        src = iframes.nth(i).get_attribute('src') or ''
-        if 'captcha' in src.lower() or 'recaptcha' in src.lower() or 'hcaptcha' in src.lower():
+def detect_captcha(driver):
+    # Look for iframes or CAPTCHA elements
+    iframes = driver.find_elements(By.TAG_NAME, "iframe")
+    for iframe in iframes:
+        src = iframe.get_attribute("src") or ""
+        if "captcha" in src.lower() or "recaptcha" in src.lower() or "hcaptcha" in src.lower():
             return True
-    captcha_elements = page.locator('[class*="captcha"], [id*="captcha"], input[name="captcha"], input[name="verification"]')
-    if captcha_elements.count() > 0:
+    # Also look for visible CAPTCHA inputs
+    captcha_inputs = driver.find_elements(By.XPATH, "//input[contains(@class, 'captcha') or contains(@id, 'captcha') or @name='captcha']")
+    if captcha_inputs:
         return True
     return False
 
-def handle_captcha_telegram(page, session):
+def handle_captcha_selenium(driver, session):
     logger.info("🧩 CAPTCHA detected – sending screenshot...")
-    screenshot_bytes = page.screenshot(full_page=True)
+    # Take screenshot
+    screenshot_bytes = driver.get_screenshot_as_png()
     session.captcha_event.clear()
     send_photo(session.chat_id, screenshot_bytes, caption="🧩 CAPTCHA detected. Reply with the text.")
     if not session.captcha_event.wait(timeout=120):
@@ -414,14 +294,15 @@ def handle_captcha_telegram(page, session):
     solution = session.captcha_value
     if not solution:
         return False
-    captcha_input = page.locator('input[name="captcha"]')
-    if not captcha_input.is_visible():
-        captcha_input = page.locator('input[name="verification"]')
-    if captcha_input.is_visible():
-        captcha_input.fill(solution)
-        submit = page.locator('button[type="submit"]:visible')
-        if submit.count() > 0:
-            submit.click()
+    # Try to fill CAPTCHA
+    captcha_input = driver.find_element(By.XPATH, "//input[contains(@name, 'captcha') or contains(@id, 'captcha')]")
+    if captcha_input:
+        captcha_input.clear()
+        captcha_input.send_keys(solution)
+        # Click submit if visible
+        submit_btn = driver.find_element(By.XPATH, "//button[@type='submit']")
+        if submit_btn:
+            submit_btn.click()
         send_message(session.chat_id, "✅ CAPTCHA solved.")
         return True
     else:
@@ -455,117 +336,196 @@ def run_automation(chat_id):
     day, month, year = random_dob()
 
     proxy_str = get_proxy(chat_id)
-    if proxy_str:
-        logger.info(f"Using stored proxy: {proxy_str}")
-    else:
-        logger.info("No proxy, direct connection.")
-
+    driver = None
     try:
-        playwright, browser, page = start_browser(proxy_str)
+        driver = start_browser(proxy_str)
         send_message(chat_id, "🚀 Browser launched. Starting signup...")
 
-        # Navigate
         logger.info("🌐 Navigating to Instagram signup page...")
-        page.goto(INSTA_URL, timeout=NAV_TIMEOUT)
-        page.wait_for_load_state("networkidle")
+        driver.get(INSTA_URL)
+        wait = WebDriverWait(driver, ELEMENT_TIMEOUT)
 
-        if detect_captcha(page):
-            if not handle_captcha_telegram(page, session):
+        # Check initial CAPTCHA
+        if detect_captcha(driver):
+            if not handle_captcha_selenium(driver, session):
                 raise Exception("CAPTCHA failed")
-            page.wait_for_load_state("networkidle")
+            time.sleep(2)
 
-        # --- Fill all fields (single-page form) ---
+        # ---- Fill email/phone ----
         logger.info("📝 Filling email/phone...")
-        email_phone_input = page.locator('input[name="emailOrPhone"]')
-        if email_phone_input.is_visible():
-            email_phone_input.fill(login_value)
-            logger.info(f"Filled email/phone with {login_value}")
-        else:
-            email_input = page.locator('input[name="email"]')
-            if email_input.is_visible() and email:
-                email_input.fill(email)
-            phone_input = page.locator('input[name="phone"]')
-            if phone_input.is_visible() and phone:
-                phone_input.fill(phone)
+        # Find field – try by name, then by placeholder
+        field = None
+        try:
+            field = driver.find_element(By.NAME, "emailOrPhone")
+        except:
+            pass
+        if not field:
+            try:
+                field = driver.find_element(By.NAME, "email")
+            except:
+                pass
+        if not field:
+            try:
+                field = driver.find_element(By.XPATH, "//input[@placeholder='Mobile number or email address']")
+            except:
+                pass
+        if not field:
+            raise Exception("Email/phone field not found.")
+        field.clear()
+        field.send_keys(login_value)
+        logger.info(f"Filled email/phone with {login_value}")
 
-        # Password
+        # ---- Password ----
         logger.info("📝 Filling password...")
-        pwd_input = page.locator('input[type="password"]')
-        if pwd_input.is_visible():
-            pwd_input.fill(password)
-            logger.info("Filled password using type='password'.")
-        else:
-            pwd_input = page.locator('input[name="password"]')
-            if pwd_input.is_visible():
-                pwd_input.fill(password)
-                logger.info("Filled password using name='password'.")
-            else:
-                pwd_input = page.locator('input[placeholder*="Password"]')
-                if pwd_input.is_visible():
-                    pwd_input.fill(password)
-                    logger.info("Filled password using placeholder.")
-                else:
-                    raise Exception("Password field not found.")
+        try:
+            pwd = driver.find_element(By.XPATH, "//input[@type='password']")
+        except:
+            pwd = driver.find_element(By.NAME, "password")
+        pwd.clear()
+        pwd.send_keys(password)
 
-        # --- DOB using ultra-robust helper ---
+        # ---- Date of Birth ----
         logger.info("📝 Filling date of birth...")
-        fill_dob_field(page, "Day", day, 0)
-        fill_dob_field(page, "Month", month, 1)
-        fill_dob_field(page, "Year", year, 2)
+        # Find the "Date of birth" label, then find the parent div, then get the three select/input inside
+        try:
+            dob_label = driver.find_element(By.XPATH, "//label[contains(text(), 'Date of birth') or contains(text(), 'Birthday')]")
+            container = dob_label.find_element(By.XPATH, "./ancestor::div[1]")
+            fields = container.find_elements(By.XPATH, ".//select | .//input")
+        except:
+            # Fallback: look for the DOB fields by order – try to find input after password
+            # Let's find all visible inputs and selects after password
+            all_fields = driver.find_elements(By.XPATH, "//input | //select")
+            # Filter out hidden, submit, etc.
+            visible = [el for el in all_fields if el.is_displayed() and el.get_attribute("type") not in ["hidden", "submit", "button", "checkbox", "radio"]]
+            # Remove password field itself
+            visible = [el for el in visible if el.get_attribute("type") != "password"]
+            # Now we need day, month, year – they are usually the next 3 after email and password
+            # We can find the password index and then take the next three
+            # Let's implement that fallback in a loop
+            # We'll just try to find fields by name day, month, year
+            day_field = None
+            month_field = None
+            year_field = None
+            try:
+                day_field = driver.find_element(By.NAME, "day")
+            except:
+                pass
+            try:
+                month_field = driver.find_element(By.NAME, "month")
+            except:
+                pass
+            try:
+                year_field = driver.find_element(By.NAME, "year")
+            except:
+                pass
+            if not day_field or not month_field or not year_field:
+                # Try by placeholder
+                try:
+                    day_field = driver.find_element(By.XPATH, "//input[@placeholder='DD'] | //select[@placeholder='DD']")
+                except:
+                    pass
+                try:
+                    month_field = driver.find_element(By.XPATH, "//input[@placeholder='MM'] | //select[@placeholder='MM']")
+                except:
+                    pass
+                try:
+                    year_field = driver.find_element(By.XPATH, "//input[@placeholder='YYYY'] | //select[@placeholder='YYYY']")
+                except:
+                    pass
+            if day_field and month_field and year_field:
+                # We have fields
+                if day_field.tag_name == "select":
+                    day_field.send_keys(str(day))
+                else:
+                    day_field.clear()
+                    day_field.send_keys(str(day))
+                if month_field.tag_name == "select":
+                    month_field.send_keys(str(month))
+                else:
+                    month_field.clear()
+                    month_field.send_keys(str(month))
+                if year_field.tag_name == "select":
+                    year_field.send_keys(str(year))
+                else:
+                    year_field.clear()
+                    year_field.send_keys(str(year))
+                logger.info("Filled DOB via fallback selectors.")
+                dob_filled = True
+            else:
+                raise Exception("Could not find DOB fields.")
+        else:
+            # We have container and fields
+            if len(fields) >= 3:
+                day_el = fields[0]
+                month_el = fields[1]
+                year_el = fields[2]
+                if day_el.tag_name == "select":
+                    day_el.send_keys(str(day))
+                else:
+                    day_el.clear()
+                    day_el.send_keys(str(day))
+                if month_el.tag_name == "select":
+                    month_el.send_keys(str(month))
+                else:
+                    month_el.clear()
+                    month_el.send_keys(str(month))
+                if year_el.tag_name == "select":
+                    year_el.send_keys(str(year))
+                else:
+                    year_el.clear()
+                    year_el.send_keys(str(year))
+                logger.info("Filled DOB using label-container approach.")
+            else:
+                raise Exception("Not enough DOB fields in container.")
 
-        # Full name
+        # ---- Full name ----
         logger.info("📝 Filling full name...")
-        name_input = page.locator('input[name="fullName"]')
-        if name_input.is_visible():
-            name_input.fill(full_name)
-        else:
-            raise Exception("Full name field not found.")
+        try:
+            name_field = driver.find_element(By.NAME, "fullName")
+        except:
+            name_field = driver.find_element(By.XPATH, "//input[@placeholder='Full name']")
+        name_field.clear()
+        name_field.send_keys(full_name)
 
-        # Username
+        # ---- Username ----
         logger.info("📝 Filling username...")
-        username_input = page.locator('input[name="username"]')
-        if username_input.is_visible():
-            username_input.fill(username)
-        else:
-            raise Exception("Username field not found.")
+        try:
+            user_field = driver.find_element(By.NAME, "username")
+        except:
+            user_field = driver.find_element(By.XPATH, "//input[@placeholder='Username']")
+        user_field.clear()
+        user_field.send_keys(username)
 
         send_message(chat_id, f"✅ Form filled.\nEmail/Phone: {login_value}\nName: {full_name}\nUsername: {username}\nDOB: {day}/{month}/{year}")
         logger.info("All fields filled.")
 
-        # Submit
+        # ---- Submit ----
         logger.info("🔘 Clicking Submit...")
-        submit_btn = page.locator('button[type="submit"]:visible')
-        if submit_btn.is_visible():
-            submit_btn.click()
-            logger.info("Clicked submit button.")
-        else:
-            submit_btn = page.get_by_text("Submit", exact=True)
-            if submit_btn.is_visible():
-                submit_btn.click()
-                logger.info("Clicked 'Submit' text.")
-            else:
-                submit_btn = page.get_by_text("Sign up", exact=True)
-                if submit_btn.is_visible():
-                    submit_btn.click()
-                    logger.info("Clicked 'Sign up' text.")
-                else:
-                    submit_btn = page.locator('form button:visible')
-                    if submit_btn.is_visible():
-                        submit_btn.click()
-                        logger.info("Clicked any visible button in form.")
-                    else:
-                        raise Exception("Submit button not found.")
+        submit_btn = driver.find_element(By.XPATH, "//button[@type='submit']")
+        submit_btn.click()
 
-        page.wait_for_load_state("networkidle")
-        if detect_captcha(page):
-            if not handle_captcha_telegram(page, session):
+        # Wait for possible CAPTCHA after submit
+        time.sleep(2)
+        if detect_captcha(driver):
+            if not handle_captcha_selenium(driver, session):
                 raise Exception("CAPTCHA after submit")
-            page.wait_for_load_state("networkidle")
+            time.sleep(2)
 
-        # Wait for OTP
+        # ---- Wait for OTP ----
         logger.info("⏳ Waiting for OTP page...")
-        otp_input = page.locator('input[name="code"]')
-        otp_input.wait_for(timeout=ELEMENT_TIMEOUT)
+        # Wait for OTP input
+        otp_input = None
+        try:
+            otp_input = WebDriverWait(driver, ELEMENT_TIMEOUT).until(
+                EC.presence_of_element_located((By.XPATH, "//input[@name='code']"))
+            )
+        except:
+            # Try by placeholder
+            otp_input = WebDriverWait(driver, ELEMENT_TIMEOUT).until(
+                EC.presence_of_element_located((By.XPATH, "//input[@placeholder='Verification code']"))
+            )
+        if not otp_input:
+            raise Exception("OTP field not found.")
 
         session.otp_event.clear()
         send_message(chat_id, "🔑 OTP sent to your " + login_type + ". Reply with 6-digit code.")
@@ -575,47 +535,42 @@ def run_automation(chat_id):
         if not otp:
             raise ValueError("OTP empty")
 
-        otp_input.fill(otp)
-        verify_btn = page.locator('button[type="submit"]:visible')
-        if verify_btn.is_visible():
-            verify_btn.click()
-            logger.info("Clicked verify button.")
-        else:
-            verify_btn = page.get_by_text("Verify", exact=True)
-            if verify_btn.is_visible():
-                verify_btn.click()
-                logger.info("Clicked 'Verify' text.")
-            else:
-                raise Exception("Verify button not found.")
+        otp_input.clear()
+        otp_input.send_keys(otp)
+        # Click verify
+        verify_btn = driver.find_element(By.XPATH, "//button[@type='submit']")
+        verify_btn.click()
 
-        page.wait_for_load_state("networkidle")
-        if detect_captcha(page):
-            if not handle_captcha_telegram(page, session):
+        time.sleep(2)
+        if detect_captcha(driver):
+            if not handle_captcha_selenium(driver, session):
                 raise Exception("CAPTCHA after OTP")
-            page.wait_for_load_state("networkidle")
+            time.sleep(2)
 
-        # Final result
-        try:
-            page.wait_for_url("**/accounts/emailsignup/**", timeout=5000, state='detached')
-            page.wait_for_load_state("networkidle")
-            url = page.url
-            if "instagram.com" in url and "/accounts/" not in url:
-                result_msg = f"✅ SUCCESS – Account created for {full_name} (Username: {username})"
-                session.result = "success"
-                logger.info("✅ SUCCESS")
-            else:
-                error = page.locator('text="Something went wrong"')
-                if error.is_visible():
+        # ---- Final result ----
+        # Check if we are redirected to feed or still on signup
+        time.sleep(3)
+        current_url = driver.current_url
+        if "accounts/emailsignup" not in current_url and "instagram.com" in current_url:
+            result_msg = f"✅ SUCCESS – Account created for {full_name} (Username: {username})"
+            session.result = "success"
+            logger.info("✅ SUCCESS")
+        else:
+            # Check for error message
+            try:
+                error = driver.find_element(By.XPATH, "//*[contains(text(), 'Something went wrong')]")
+                if error:
                     result_msg = "❌ FAILED – Error message"
                     logger.error("❌ FAILED: error message displayed.")
+                    session.result = "failed"
                 else:
                     result_msg = "❌ FAILED – Unknown"
                     logger.error("❌ FAILED: unknown issue.")
+                    session.result = "failed"
+            except:
+                result_msg = "❌ FAILED – Unknown"
                 session.result = "failed"
-        except PlaywrightTimeout:
-            result_msg = "⚠️ Timeout – incomplete"
-            session.result = "failed"
-            logger.error("⏰ Timeout waiting for redirect.")
+                logger.error("❌ FAILED: unknown issue.")
 
         send_message(chat_id, result_msg)
 
@@ -624,14 +579,12 @@ def run_automation(chat_id):
         send_message(chat_id, f"❌ Error: {str(e)}")
         session.result = "failed"
     finally:
-        if 'browser' in locals():
-            browser.close()
-        if 'playwright' in locals():
-            playwright.stop()
+        if driver:
+            driver.quit()
         session.running = False
         send_message(chat_id, "🏁 Finished.")
 
-# -------------------- Handlers --------------------
+# -------------------- Handlers (unchanged) --------------------
 def handle_start(chat_id, message_id=None):
     keyboard = {
         "inline_keyboard": [
