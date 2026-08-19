@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Telegram Bot for Instagram Signup – Single‑Page Form, Proxy, CAPTCHA
+# Telegram Bot for Instagram Signup – Robust Field Detection
 
 import os, sys, json, time, random, threading, requests, logging, sqlite3
 from io import BytesIO
@@ -217,6 +217,55 @@ def edit_message_text(chat_id, message_id, text, reply_markup=None):
         payload["reply_markup"] = reply_markup
     return call_telegram("editMessageText", **payload)
 
+# ====================== Field finder helper ======================
+def fill_dob_field(page, field, value):
+    """Robustly find and fill a day/month/year field."""
+    field_name = field.lower()  # 'day', 'month', 'year'
+    # Build list of selectors to try
+    selectors = []
+    # 1. by name
+    selectors.append(f'input[name="{field_name}"]')
+    selectors.append(f'select[name="{field_name}"]')
+    # 2. by placeholder (case‑insensitive)
+    selectors.append(f'input[placeholder*="{field}" i]')
+    # 3. by aria-label
+    selectors.append(f'input[aria-label*="{field}" i]')
+    # 4. common abbreviations
+    if field_name == "day":
+        selectors.append('input[placeholder*="DD" i]')
+    elif field_name == "month":
+        selectors.append('input[placeholder*="MM" i]')
+    elif field_name == "year":
+        selectors.append('input[placeholder*="YYYY" i]')
+        selectors.append('input[placeholder*="Year" i]')
+    # 5. label-based: find label containing the text, then look for input/select after it
+    # We'll try a parent‑based approach: locate label, then get the next input/select within the same container
+    label_selector = f'label:has-text("{field}")'
+    selectors.append(f'{label_selector} + input')
+    selectors.append(f'{label_selector} + select')
+    # 6. generic: any input/select that might be the one (we can't guess, but we try id)
+    selectors.append(f'input[id*="{field_name}" i]')
+    selectors.append(f'select[id*="{field_name}" i]')
+
+    for sel in selectors:
+        try:
+            element = page.locator(sel)
+            if element.is_visible():
+                if 'select' in sel:
+                    element.select_option(str(value))
+                else:
+                    element.fill(str(value))
+                logger.info(f"Filled {field} using selector: {sel}")
+                return True
+        except:
+            continue
+    # Final fallback: try to find any visible input or select that is not hidden and might be the field
+    # This is risky but better than failing.
+    # We'll try to find an input with type="text" and not hidden, but we don't know which.
+    # For day, we can try to find an input with a placeholder that contains 'day' or 'dd'.
+    # Already covered above.
+    raise Exception(f"{field} field not found after trying all selectors.")
+
 # -------------------- Automation --------------------
 class AutomationSession:
     def __init__(self, chat_id):
@@ -353,20 +402,18 @@ def run_automation(chat_id):
             if phone_input.is_visible() and phone:
                 phone_input.fill(phone)
 
-        # --- FILL PASSWORD (robust) ---
+        # Password
         logger.info("📝 Filling password...")
         pwd_input = page.locator('input[type="password"]')
         if pwd_input.is_visible():
             pwd_input.fill(password)
             logger.info("Filled password using type='password'.")
         else:
-            # fallback: try name="password"
             pwd_input = page.locator('input[name="password"]')
             if pwd_input.is_visible():
                 pwd_input.fill(password)
                 logger.info("Filled password using name='password'.")
             else:
-                # fallback: placeholder
                 pwd_input = page.locator('input[placeholder*="Password"]')
                 if pwd_input.is_visible():
                     pwd_input.fill(password)
@@ -374,50 +421,13 @@ def run_automation(chat_id):
                 else:
                     raise Exception("Password field not found.")
 
+        # --- DOB using robust helper ---
         logger.info("📝 Filling date of birth...")
-        # Day
-        day_input = page.locator('input[name="day"]')
-        if day_input.is_visible():
-            day_input.fill(str(day))
-        else:
-            day_select = page.locator('select[name="day"]')
-            if day_select.is_visible():
-                day_select.select_option(str(day))
-            else:
-                day_input = page.locator('input[placeholder*="Day"]')
-                if day_input.is_visible():
-                    day_input.fill(str(day))
-                else:
-                    raise Exception("Day field not found.")
-        # Month
-        month_input = page.locator('input[name="month"]')
-        if month_input.is_visible():
-            month_input.fill(str(month))
-        else:
-            month_select = page.locator('select[name="month"]')
-            if month_select.is_visible():
-                month_select.select_option(str(month))
-            else:
-                month_input = page.locator('input[placeholder*="Month"]')
-                if month_input.is_visible():
-                    month_input.fill(str(month))
-                else:
-                    raise Exception("Month field not found.")
-        # Year
-        year_input = page.locator('input[name="year"]')
-        if year_input.is_visible():
-            year_input.fill(str(year))
-        else:
-            year_input = page.locator('input[placeholder*="Year"]')
-            if year_input.is_visible():
-                year_input.fill(str(year))
-            else:
-                year_select = page.locator('select[name="year"]')
-                if year_select.is_visible():
-                    year_select.select_option(str(year))
-                else:
-                    raise Exception("Year field not found.")
+        fill_dob_field(page, "Day", day)
+        fill_dob_field(page, "Month", month)
+        fill_dob_field(page, "Year", year)
 
+        # Full name
         logger.info("📝 Filling full name...")
         name_input = page.locator('input[name="fullName"]')
         if name_input.is_visible():
@@ -425,6 +435,7 @@ def run_automation(chat_id):
         else:
             raise Exception("Full name field not found.")
 
+        # Username
         logger.info("📝 Filling username...")
         username_input = page.locator('input[name="username"]')
         if username_input.is_visible():
@@ -435,7 +446,7 @@ def run_automation(chat_id):
         send_message(chat_id, f"✅ Form filled.\nEmail/Phone: {login_value}\nName: {full_name}\nUsername: {username}\nDOB: {day}/{month}/{year}")
         logger.info("All fields filled.")
 
-        # Submit the form
+        # Submit
         logger.info("🔘 Clicking Submit...")
         submit_btn = page.locator('button[type="submit"]:visible')
         if submit_btn.is_visible():
@@ -465,7 +476,7 @@ def run_automation(chat_id):
                 raise Exception("CAPTCHA after submit")
             page.wait_for_load_state("networkidle")
 
-        # Wait for OTP page
+        # Wait for OTP
         logger.info("⏳ Waiting for OTP page...")
         otp_input = page.locator('input[name="code"]')
         otp_input.wait_for(timeout=ELEMENT_TIMEOUT)
