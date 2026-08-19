@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Instagram Account Creator Bot – Hardcoded Credentials
+# Instagram Account Creator Bot – Fixed OTP Send
 
 import os
 import random
@@ -12,22 +12,17 @@ import telebot
 # ============================================================
 #  ✏️ EDIT THESE TWO LINES – PUT YOUR VALUES HERE
 # ============================================================
-BOT_TOKEN = "8760264279:AAGFGJ-Y0s4BKL9ATpuT8lBUZeQ2ntj5fq0"          # <-- Paste your bot token (string)
-OWNER_IDS = [8754004223]                    # <-- Paste your Telegram user ID (integer, list)
-# ============================================================
-# If you want to allow everyone, set OWNER_IDS = []
-
-# Optional: Proxy (if you want to use one)
-PROXY_STR = ""   # e.g., "http://user:pass@ip:port" – leave empty if not used
-
+BOT_TOKEN = "8760264279:AAGFGJ-Y0s4BKL9ATpuT8lBUZeQ2ntj5fq0"          # <-- Paste your bot token
+OWNER_IDS = [8754004223]                    # <-- Paste your Telegram user ID (integer)
 # ============================================================
 
+PROXY_STR = ""   # optional proxy
 proxies = None
 if PROXY_STR:
     proxies = {"http": PROXY_STR, "https": PROXY_STR}
 
 bot = telebot.TeleBot(BOT_TOKEN)
-user_sessions = {}  # chat_id -> state
+user_sessions = {}
 
 # ============ CORE FUNCTIONS ============
 
@@ -80,6 +75,7 @@ def generate_username(firstname):
     return f"{base}_{suffix}"
 
 def send_verification_email(headers, email):
+    """Send OTP and return (success, response_text)."""
     try:
         device_id = headers['cookie'].split('mid=')[1].split(';')[0]
         data = {'device_id': device_id, 'email': email}
@@ -87,9 +83,14 @@ def send_verification_email(headers, email):
             'https://www.instagram.com/api/v1/accounts/send_verify_email/',
             headers=headers, data=data, proxies=proxies, timeout=30
         )
-        return response.text
-    except Exception:
-        return ""
+        if response.status_code == 200 and 'email_sent":true' in response.text:
+            return True, response.text
+        else:
+            # return error details
+            error_msg = f"Status: {response.status_code}, Response: {response.text[:300]}"
+            return False, error_msg
+    except Exception as e:
+        return False, str(e)
 
 def validate_otp(headers, email, code):
     try:
@@ -204,19 +205,28 @@ def handle_create(message):
 
     bot.reply_to(message, f"🔄 Starting for `{email}` ...", parse_mode="Markdown")
 
-    headers = get_headers()
-    resp_text = send_verification_email(headers, email)
-
-    if 'email_sent":true' in resp_text:
-        bot.send_message(chat_id, f"✅ OTP sent to `{email}`. Reply with the 6‑digit code.", parse_mode="Markdown")
-        user_sessions[chat_id] = {
-            'state': 'waiting_otp',
-            'email': email,
-            'headers': headers,
-            'signup_code': None,
-        }
-    else:
-        bot.send_message(chat_id, f"❌ Failed to send OTP.\n{resp_text[:200]}")
+    # Try up to 3 times to send OTP
+    for attempt in range(3):
+        headers = get_headers()
+        success, response_text = send_verification_email(headers, email)
+        if success:
+            bot.send_message(chat_id, f"✅ OTP sent to `{email}`. Reply with the 6‑digit code.", parse_mode="Markdown")
+            user_sessions[chat_id] = {
+                'state': 'waiting_otp',
+                'email': email,
+                'headers': headers,
+                'signup_code': None,
+            }
+            return
+        else:
+            # If attempt < 2, wait and retry
+            if attempt < 2:
+                bot.send_message(chat_id, f"⚠️ OTP sending failed (attempt {attempt+1}). Retrying...")
+                time.sleep(3)
+            else:
+                # Final failure
+                bot.send_message(chat_id, f"❌ Failed to send OTP after 3 attempts.\nError: {response_text}")
+                return
 
 @bot.message_handler(func=lambda msg: True)
 def handle_all_messages(message):
