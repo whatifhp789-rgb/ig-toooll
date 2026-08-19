@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Telegram Bot for Instagram Signup – DOB detection using multiple strategies
+# Telegram Bot for Instagram Signup – DOB detection with debugging
 
 import os, sys, json, time, random, threading, requests, logging, sqlite3
 from io import BytesIO
@@ -223,14 +223,13 @@ def fill_dob_field(page, field, value, order_index):
     Fill a DOB field (Day, Month, Year) using multiple strategies.
     order_index: 0 for Day, 1 for Month, 2 for Year.
     """
-    field_lower = field.lower()
     logger.info(f"Searching for {field} field...")
 
-    # ---- Strategy 1: get_by_label (most reliable) ----
+    # ---- Strategy 1: get_by_label ----
     try:
         element = page.get_by_label(field, exact=True)
         if element.is_visible():
-            if element.get_attribute('type') == 'select-one' or element.evaluate('el => el.tagName.toLowerCase() === "select"'):
+            if element.evaluate('el => el.tagName.toLowerCase()') == 'select':
                 element.select_option(str(value))
             else:
                 element.fill(str(value))
@@ -239,16 +238,22 @@ def fill_dob_field(page, field, value, order_index):
     except:
         pass
 
-    # ---- Strategy 2: by name, id, placeholder (for both input and select) ----
+    # ---- Strategy 2: by name, id, placeholder (both input/select) ----
     selectors = []
-    selectors.append(f'input[name="{field_lower}"]')
-    selectors.append(f'input[id*="{field_lower}" i]')
-    selectors.append(f'input[placeholder*="{field}" i]')
-    selectors.append(f'input[aria-label*="{field}" i]')
-    selectors.append(f'select[name="{field_lower}"]')
-    selectors.append(f'select[id*="{field_lower}" i]')
-    selectors.append(f'select[placeholder*="{field}" i]')
-    selectors.append(f'select[aria-label*="{field}" i]')
+    for tag in ['input', 'select']:
+        selectors.append(f'{tag}[name="{field.lower()}"]')
+        selectors.append(f'{tag}[id*="{field.lower()}" i]')
+        selectors.append(f'{tag}[placeholder*="{field}" i]')
+        selectors.append(f'{tag}[aria-label*="{field}" i]')
+    if field.lower() == 'day':
+        selectors.append('input[placeholder*="DD" i]')
+        selectors.append('select[placeholder*="DD" i]')
+    elif field.lower() == 'month':
+        selectors.append('input[placeholder*="MM" i]')
+        selectors.append('select[placeholder*="MM" i]')
+    elif field.lower() == 'year':
+        selectors.append('input[placeholder*="YYYY" i]')
+        selectors.append('select[placeholder*="YYYY" i]')
 
     for sel in selectors:
         try:
@@ -264,7 +269,7 @@ def fill_dob_field(page, field, value, order_index):
         except:
             continue
 
-    # ---- Strategy 3: label-based XPath ----
+    # ---- Strategy 3: XPath based on label ----
     xpath = f'//label[contains(text(), "{field}")]/following::input[1]'
     try:
         element = page.locator(f'xpath={xpath}')
@@ -274,7 +279,6 @@ def fill_dob_field(page, field, value, order_index):
             return True
     except:
         pass
-
     xpath_sel = f'//label[contains(text(), "{field}")]/following::select[1]'
     try:
         element = page.locator(f'xpath={xpath_sel}')
@@ -285,7 +289,7 @@ def fill_dob_field(page, field, value, order_index):
     except:
         pass
 
-    # ---- Strategy 4: label + sibling (input/select) ----
+    # ---- Strategy 4: label + sibling ----
     for tag in ['input', 'select']:
         try:
             element = page.locator(f'label:has-text("{field}") + {tag}')
@@ -299,41 +303,58 @@ def fill_dob_field(page, field, value, order_index):
         except:
             pass
 
-    # ---- Strategy 5: get all visible inputs and selects, filter by order_index ----
+    # ---- Strategy 5: fallback using password field index ----
     try:
-        page.wait_for_selector('input:visible, select:visible', timeout=5000)
         all_fields = page.locator('input:visible, select:visible').all()
         visible_fields = []
-        for field_el in all_fields:
-            tag = field_el.evaluate('el => el.tagName.toLowerCase()')
-            type_attr = field_el.get_attribute('type') or ''
+        for el in all_fields:
+            tag = el.evaluate('el => el.tagName.toLowerCase()')
+            type_attr = el.get_attribute('type') or ''
             if tag == 'input' and type_attr in ['submit', 'button', 'hidden', 'checkbox', 'radio']:
                 continue
             if tag == 'input' and type_attr == 'password':
                 continue
-            visible_fields.append(field_el)
+            visible_fields.append(el)
+
+        # Log all visible fields for debugging
+        logger.debug("Visible fields after filtering:")
+        for idx, el in enumerate(visible_fields):
+            tag = el.evaluate('el => el.tagName.toLowerCase()')
+            attrs = el.evaluate('el => ({name: el.name, id: el.id, placeholder: el.placeholder, type: el.type})')
+            logger.debug(f"  {idx}: {tag} -> {attrs}")
 
         # Find password field index
-        password_index = None
-        for idx, f in enumerate(visible_fields):
-            if f.get_attribute('type') == 'password':
-                password_index = idx
-                break
-        if password_index is not None and password_index + 3 < len(visible_fields):
-            target_index = password_index + order_index + 1
-            if target_index < len(visible_fields):
-                element = visible_fields[target_index]
-                tag = element.evaluate('el => el.tagName.toLowerCase()')
-                if tag == 'select':
-                    element.select_option(str(value))
-                else:
-                    element.fill(str(value))
-                logger.info(f"✅ Filled {field} using index fallback (password-based), index: {target_index}")
-                return True
+        password_field = page.locator('input[type="password"]').first
+        if password_field.is_visible():
+            password_index = None
+            for idx, el in enumerate(visible_fields):
+                if el.get_attribute('type') == 'password':
+                    password_index = idx
+                    break
+            if password_index is not None and password_index + 3 < len(visible_fields):
+                target_index = password_index + order_index + 1
+                if target_index < len(visible_fields):
+                    element = visible_fields[target_index]
+                    tag = element.evaluate('el => el.tagName.toLowerCase()')
+                    if tag == 'select':
+                        element.select_option(str(value))
+                    else:
+                        element.fill(str(value))
+                    logger.info(f"✅ Filled {field} using password-based index {target_index}")
+                    return True
     except Exception as e:
-        logger.warning(f"Index fallback failed: {e}")
+        logger.warning(f"Password-based fallback failed: {e}")
 
-    # ---- If all fails, raise error ----
+    # ---- If all fails, log all visible fields and raise error ----
+    try:
+        all_fields_html = page.locator('input:visible, select:visible').all()
+        logger.error("All visible input/select elements:")
+        for idx, el in enumerate(all_fields_html):
+            tag = el.evaluate('el => el.tagName.toLowerCase()')
+            attrs = el.evaluate('el => ({name: el.name, id: el.id, placeholder: el.placeholder, type: el.type, className: el.className})')
+            logger.error(f"  {idx}: {tag} -> {attrs}")
+    except:
+        pass
     raise Exception(f"{field} field not found after trying all strategies.")
 
 # -------------------- Automation --------------------
@@ -492,7 +513,7 @@ def run_automation(chat_id):
                     raise Exception("Password field not found.")
 
         # --- DOB using ultra-robust helper ---
-        logger.info("📝 Filling date of birth (dropdowns)...")
+        logger.info("📝 Filling date of birth...")
         fill_dob_field(page, "Day", day, 0)
         fill_dob_field(page, "Month", month, 1)
         fill_dob_field(page, "Year", year, 2)
