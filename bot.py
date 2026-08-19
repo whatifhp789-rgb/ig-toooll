@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Telegram Bot for Instagram Signup – Ultra‑Robust DOB Dropdowns
+# Telegram Bot for Instagram Signup – DOB detection using multiple strategies
 
 import os, sys, json, time, random, threading, requests, logging, sqlite3
 from io import BytesIO
@@ -217,80 +217,124 @@ def edit_message_text(chat_id, message_id, text, reply_markup=None):
         payload["reply_markup"] = reply_markup
     return call_telegram("editMessageText", **payload)
 
-# ====================== ULTRA‑ROBUST DOB FIELD HELPER ======================
+# ====================== ULTRA-ROBUST DOB FIELD HELPER ======================
 def fill_dob_field(page, field, value, order_index):
     """
-    Fill a DOB dropdown. order_index: 0 for Day, 1 for Month, 2 for Year.
+    Fill a DOB field (Day, Month, Year) using multiple strategies.
+    order_index: 0 for Day, 1 for Month, 2 for Year.
     """
-    field_name = field.lower()
-    # List of selectors to try
-    selectors = []
+    field_lower = field.lower()
+    logger.info(f"Searching for {field} field...")
 
-    # 1. By name attribute
-    selectors.append(f'select[name="{field_name}"]')
-    # 2. By id (case-insensitive)
-    selectors.append(f'select[id*="{field_name}" i]')
-    # 3. By aria-label
-    selectors.append(f'select[aria-label*="{field}" i]')
-    # 4. By placeholder
+    # ---- Strategy 1: get_by_label (most reliable) ----
+    try:
+        element = page.get_by_label(field, exact=True)
+        if element.is_visible():
+            if element.get_attribute('type') == 'select-one' or element.evaluate('el => el.tagName.toLowerCase() === "select"'):
+                element.select_option(str(value))
+            else:
+                element.fill(str(value))
+            logger.info(f"✅ Filled {field} using get_by_label")
+            return True
+    except:
+        pass
+
+    # ---- Strategy 2: by name, id, placeholder (for both input and select) ----
+    selectors = []
+    selectors.append(f'input[name="{field_lower}"]')
+    selectors.append(f'input[id*="{field_lower}" i]')
+    selectors.append(f'input[placeholder*="{field}" i]')
+    selectors.append(f'input[aria-label*="{field}" i]')
+    selectors.append(f'select[name="{field_lower}"]')
+    selectors.append(f'select[id*="{field_lower}" i]')
     selectors.append(f'select[placeholder*="{field}" i]')
-    # 5. By label + select combination
-    selectors.append(f'label:has-text("{field}") + select')
-    selectors.append(f'label:has-text("{field}") ~ select')
+    selectors.append(f'select[aria-label*="{field}" i]')
 
     for sel in selectors:
         try:
             element = page.locator(sel)
             if element.is_visible():
-                element.select_option(str(value))
+                tag = element.evaluate('el => el.tagName.toLowerCase()')
+                if tag == 'select':
+                    element.select_option(str(value))
+                else:
+                    element.fill(str(value))
                 logger.info(f"✅ Filled {field} using selector: {sel}")
                 return True
         except:
             continue
 
-    # XPath fallback
-    xpath = f'//label[contains(text(), "{field}")]/following::select[1]'
+    # ---- Strategy 3: label-based XPath ----
+    xpath = f'//label[contains(text(), "{field}")]/following::input[1]'
     try:
         element = page.locator(f'xpath={xpath}')
         if element.is_visible():
-            element.select_option(str(value))
+            element.fill(str(value))
             logger.info(f"✅ Filled {field} using XPath: {xpath}")
             return True
     except:
         pass
 
-    # Another XPath: find any select in same container as label
-    xpath2 = f'//label[contains(text(), "{field}")]/..//select'
+    xpath_sel = f'//label[contains(text(), "{field}")]/following::select[1]'
     try:
-        element = page.locator(f'xpath={xpath2}')
+        element = page.locator(f'xpath={xpath_sel}')
         if element.is_visible():
             element.select_option(str(value))
-            logger.info(f"✅ Filled {field} using XPath: {xpath2}")
+            logger.info(f"✅ Filled {field} using XPath: {xpath_sel}")
             return True
     except:
         pass
 
-    # ---- ULTIMATE FALLBACK: use index among all selects ----
+    # ---- Strategy 4: label + sibling (input/select) ----
+    for tag in ['input', 'select']:
+        try:
+            element = page.locator(f'label:has-text("{field}") + {tag}')
+            if element.is_visible():
+                if tag == 'select':
+                    element.select_option(str(value))
+                else:
+                    element.fill(str(value))
+                logger.info(f"✅ Filled {field} using label + {tag}")
+                return True
+        except:
+            pass
+
+    # ---- Strategy 5: get all visible inputs and selects, filter by order_index ----
     try:
-        # Wait a moment for all selects to be present
-        page.wait_for_selector('select', timeout=5000)
-        all_selects = page.locator('select').all()
-        if order_index < len(all_selects):
-            sel = all_selects[order_index]
-            if sel.is_visible():
-                sel.select_option(str(value))
-                logger.info(f"✅ Filled {field} using index {order_index} (all selects found: {len(all_selects)})")
+        page.wait_for_selector('input:visible, select:visible', timeout=5000)
+        all_fields = page.locator('input:visible, select:visible').all()
+        visible_fields = []
+        for field_el in all_fields:
+            tag = field_el.evaluate('el => el.tagName.toLowerCase()')
+            type_attr = field_el.get_attribute('type') or ''
+            if tag == 'input' and type_attr in ['submit', 'button', 'hidden', 'checkbox', 'radio']:
+                continue
+            if tag == 'input' and type_attr == 'password':
+                continue
+            visible_fields.append(field_el)
+
+        # Find password field index
+        password_index = None
+        for idx, f in enumerate(visible_fields):
+            if f.get_attribute('type') == 'password':
+                password_index = idx
+                break
+        if password_index is not None and password_index + 3 < len(visible_fields):
+            target_index = password_index + order_index + 1
+            if target_index < len(visible_fields):
+                element = visible_fields[target_index]
+                tag = element.evaluate('el => el.tagName.toLowerCase()')
+                if tag == 'select':
+                    element.select_option(str(value))
+                else:
+                    element.fill(str(value))
+                logger.info(f"✅ Filled {field} using index fallback (password-based), index: {target_index}")
                 return True
     except Exception as e:
         logger.warning(f"Index fallback failed: {e}")
 
-    # If all fail, log page HTML for debugging (only first 500 chars)
-    try:
-        html = page.content()
-        logger.error(f"Page HTML preview: {html[:500]}")
-    except:
-        pass
-    raise Exception(f"{field} field not found after trying all selectors and index fallback.")
+    # ---- If all fails, raise error ----
+    raise Exception(f"{field} field not found after trying all strategies.")
 
 # -------------------- Automation --------------------
 class AutomationSession:
