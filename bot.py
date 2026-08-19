@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Instagram Account Creator Bot – Fixed Proxy Validation
+# Instagram Account Creator Bot – Rate Limit Bypass + Proxy Management
 
 import os
 import random
@@ -8,19 +8,18 @@ import time
 import names
 import requests
 import telebot
-import sqlite3
 import json
-from io import BytesIO
+import sqlite3
 
 # ============================================================
 #  🔐 YOUR BOT CREDENTIALS
 # ============================================================
-BOT_TOKEN = "8760264279:AAFmr6hb-Uspz1pKR3xclQHP8aFsfF-4-yY"
-OWNER_IDS = [8754004223]
+BOT_TOKEN = "8760264279:AAFmr6hb-Uspz1pKR3xclQHP8aFsfF-4-yY"          # <-- Put your bot token
+OWNER_IDS = [8754004223]                    # <-- Put your Telegram user ID(s)
 # ============================================================
 
 # ============================================================
-#  🗃️ DATABASE (proxies)
+#  🗃️ DATABASE SETUP (for proxies)
 # ============================================================
 DB_FILE = "bot_data.db"
 
@@ -72,7 +71,7 @@ def clear_all_proxies():
     conn.close()
 
 # ============================================================
-#  🌐 PROXY PARSER & VALIDATION
+#  🌐 PROXY PARSER & VALIDATOR (Universal)
 # ============================================================
 def parse_proxy(proxy_str):
     proxy_str = proxy_str.strip()
@@ -124,72 +123,56 @@ def get_random_proxy():
     return None
 
 # ============================================================
-#  🧑 INDIAN NAMES & DOB
+#  🌐 PROXY LIST – Legacy (not used, replaced by DB)
 # ============================================================
-INDIAN_FIRST_NAMES = [
-    "Aarav","Vivaan","Aditya","Vihaan","Arjun","Sai","Pranav","Dhruv",
-    "Krishna","Shaurya","Aryan","Ishaan","Reyansh","Ayaan","Ananya",
-    "Diya","Ishita","Aadhya","Myra","Sara","Anvi","Vedika","Kavya",
-    "Riya","Anika","Sana","Ira","Alisha","Tara","Zara","Arya",
-    "Rohan","Kabir","Amit","Rahul","Priya","Neha","Pooja","Sneha"
-]
-INDIAN_SURNAMES = [
-    "Sharma","Verma","Patel","Singh","Kumar","Gupta","Joshi","Rao",
-    "Reddy","Nair","Menon","Pillai","Iyer","Mishra","Tripathi","Dubey",
-    "Pandey","Chaudhary","Yadav","Saini","Jain","Mehta","Shah","Desai"
-]
+# PROXY_LIST = [...]  # removed, now using database
 
-def random_indian_name():
-    return f"{random.choice(INDIAN_FIRST_NAMES)} {random.choice(INDIAN_SURNAMES)}"
-
-def random_dob():
-    age = random.randint(30, 80)
-    year = 2026 - age
-    month = random.randint(1, 12)
-    day = random.randint(1, 28)
-    return day, month, year
-
-# ============================================================
-#  🤖 BOT SETUP
-# ============================================================
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Mobile/15E148 Safari/604.1",
 ]
 
-bot = telebot.TeleBot(BOT_TOKEN)
-user_sessions = {}
-user_photos = {}
-
+# ============================================================
+#  🤖 BOT SETUP
+# ============================================================
 def get_random_user_agent():
     return random.choice(USER_AGENTS)
 
 def get_random_delay():
-    return random.randint(10, 30)
+    return random.randint(5, 15)  # seconds
 
-# ============ HEADER FETCH ============
+bot = telebot.TeleBot(BOT_TOKEN)
+user_sessions = {}
+
+# ============ CORE FUNCTIONS ============
+
 def get_headers():
+    """Fetch fresh headers with a random user-agent and proxy from database."""
     while True:
         try:
             an_agent = get_random_user_agent()
+            # Use a proxy from database
             proxy_str = get_random_proxy()
-            proxies = None
+            local_proxies = None
             if proxy_str:
                 parsed = parse_proxy(proxy_str)
-                proxies = {"http": parsed, "https": parsed}
+                local_proxies = {"http": parsed, "https": parsed}
 
+            # Get cookies using a request with the proxy
             r = requests.get(
                 'https://www.instagram.com/api/v1/web/accounts/login/ajax/',
                 headers={'user-agent': an_agent},
-                proxies=proxies,
+                proxies=local_proxies,
                 timeout=30
             ).cookies
 
             response1 = requests.get(
                 'https://www.instagram.com/',
                 headers={'user-agent': an_agent},
-                proxies=proxies,
+                proxies=local_proxies,
                 timeout=30
             )
             appid = response1.text.split('APP_ID":"')[1].split('"')[0]
@@ -209,124 +192,80 @@ def get_headers():
                 'x-instagram-ajax': str(rollout),
                 'x-web-device-id': r["ig_did"],
             }
-            return headers, proxies
-        except Exception as e:
-            print(f"Header fetch error: {e}")
-            time.sleep(5)
+            # Also return the proxy used (for logging)
+            return headers, local_proxies
+        except Exception:
+            time.sleep(2)
 
-# ============ OTP SEND WITH CAPTCHA ============
-def send_verification_email(headers, email, proxies, captcha_solution=None, captcha_id=None):
-    device_id = headers['cookie'].split('mid=')[1].split(';')[0]
-    data = {'device_id': device_id, 'email': email}
-    if captcha_solution and captcha_id:
-        data['captcha_solution'] = captcha_solution
-        data['captcha_id'] = captcha_id
+def generate_username(firstname):
+    base = firstname.lower().replace(" ", "")
+    suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=5))
+    return f"{base}_{suffix}"
 
-    url = 'https://www.instagram.com/api/v1/accounts/send_verify_email/'
-    response = requests.post(
-        url,
-        headers=headers,
-        data=data,
-        proxies=proxies,
-        timeout=30
-    )
-    if response.status_code == 200:
-        resp_json = response.json()
-        print(f"OTP response JSON: {json.dumps(resp_json, indent=2)}")
-        if resp_json.get('email_sent'):
-            return True, response.text, headers, None, None
-        elif resp_json.get('require_captcha'):
-            captcha_url = resp_json.get('captcha_url')
-            captcha_id = resp_json.get('captcha_id')
-            return False, "require_captcha", headers, captcha_url, captcha_id
-        else:
-            return False, f"Response: {response.text[:500]}", headers, None, None
-    else:
-        return False, f"Status: {response.status_code}, Response: {response.text[:500]}", headers, None, None
-
-def get_captcha_image_from_endpoint(headers, proxies):
-    url = 'https://www.instagram.com/api/v1/accounts/get_captcha/'
+def send_verification_email(headers, email, proxies):
     try:
-        response = requests.get(url, headers=headers, proxies=proxies, timeout=30)
-        if response.status_code == 200:
-            return True, response.content
+        device_id = headers['cookie'].split('mid=')[1].split(';')[0]
+        data = {'device_id': device_id, 'email': email}
+        response = requests.post(
+            'https://www.instagram.com/api/v1/accounts/send_verify_email/',
+            headers=headers, data=data, proxies=proxies, timeout=30
+        )
+        if response.status_code == 200 and 'email_sent":true' in response.text:
+            return True, response.text
         else:
-            return False, f"Status: {response.status_code}"
+            return False, f"Status: {response.status_code}, Response: {response.text[:500]}"
     except Exception as e:
         return False, str(e)
 
-# ============ OTP VALIDATION ============
 def validate_otp(headers, email, code, proxies):
-    device_id = headers['cookie'].split('mid=')[1].split(';')[0]
-    data = {'code': code, 'device_id': device_id, 'email': email}
-    url = 'https://www.instagram.com/api/v1/accounts/check_confirmation_code/'
-    response = requests.post(
-        url,
-        headers=headers,
-        data=data,
-        proxies=proxies,
-        timeout=30
-    )
-    return response
-
-def upload_profile_pic(sessionid, csrftoken, photo_path, proxies):
     try:
-        url = 'https://www.instagram.com/accounts/web_change_profile_picture/'
-        headers = {
-            'cookie': f'sessionid={sessionid}; csrftoken={csrftoken};',
-            'x-csrftoken': csrftoken,
-            'referer': 'https://www.instagram.com/accounts/edit/',
-            'x-requested-with': 'XMLHttpRequest',
-            'user-agent': get_random_user_agent(),
-        }
-        with open(photo_path, 'rb') as f:
-            files = {'profile_pic': f}
-            resp = requests.post(url, headers=headers, files=files, proxies=proxies, timeout=30)
-        if resp.status_code == 200 and '"changed_profile":true' in resp.text:
-            return True
-        else:
-            return False
-    except Exception as e:
-        print(f"DP upload error: {e}")
-        return False
+        device_id = headers['cookie'].split('mid=')[1].split(';')[0]
+        data = {'code': code, 'device_id': device_id, 'email': email}
+        response = requests.post(
+            'https://www.instagram.com/api/v1/accounts/check_confirmation_code/',
+            headers=headers, data=data, proxies=proxies, timeout=30
+        )
+        return response
+    except Exception:
+        return None
 
 def create_instagram_account(headers, email, signup_code, chat_id, proxies):
-    full_name = random_indian_name()
-    firstname = full_name.split()[0]
+    firstname = names.get_first_name()
     username = generate_username(firstname)
     password = f"{firstname.strip()}@{random.randint(100, 999)}"
-    day, month, year = random_dob()
 
     data = {
         'enc_password': f'#PWD_INSTAGRAM_BROWSER:0:{round(time.time())}:{password}',
         'email': email,
         'username': username,
-        'first_name': full_name,
-        'month': month,
-        'day': day,
-        'year': year,
+        'first_name': firstname,
+        'month': random.randint(1, 12),
+        'day': random.randint(1, 28),
+        'year': random.randint(1990, 2001),
         'client_id': headers['cookie'].split('mid=')[1].split(';')[0],
         'seamless_login_enabled': '1',
         'tos_version': 'row',
         'force_sign_up_code': signup_code,
     }
 
-    wait_time = 30
+    # Exponential backoff variables
+    wait_time = 30  # start with 30 seconds
 
-    for attempt in range(1, 8):
+    for attempt in range(1, 10):  # up to 10 attempts
         try:
+            # Add random delay before request
             delay = get_random_delay()
             time.sleep(delay)
 
             if attempt > 1:
+                # Get fresh headers and a new proxy
                 headers, proxies = get_headers()
                 data['client_id'] = headers['cookie'].split('mid=')[1].split(';')[0]
+                # Also regenerate username/password if needed
                 if attempt > 3:
-                    full_name = random_indian_name()
-                    firstname = full_name.split()[0]
+                    firstname = names.get_first_name()
                     username = generate_username(firstname)
                     password = f"{firstname.strip()}@{random.randint(100, 999)}"
-                    data['first_name'] = full_name
                     data['username'] = username
                     data['enc_password'] = f'#PWD_INSTAGRAM_BROWSER:0:{round(time.time())}:{password}'
 
@@ -335,55 +274,53 @@ def create_instagram_account(headers, email, signup_code, chat_id, proxies):
                 headers=headers, data=data, proxies=proxies, timeout=30
             )
 
-            if response.status_code == 429:
-                bot.send_message(chat_id, f"⏳ Rate limited. Waiting {wait_time} seconds...")
+            full_response = response.text
+            status_code = response.status_code
+
+            # If rate limited, wait exponentially
+            if status_code == 429:
+                bot.send_message(chat_id, f"⏳ Rate limited. Waiting {wait_time} seconds before retry...")
                 time.sleep(wait_time)
-                wait_time *= 2
+                wait_time *= 2  # double the wait time for next time
                 continue
 
-            if '"account_created":true' in response.text:
+            if '"account_created":true' in full_response:
                 sessionid = response.cookies.get('sessionid')
                 csrftoken = headers['x-csrftoken']
                 cookie_dict = response.cookies.get_dict()
                 cookie_str = "; ".join([f"{k}={v}" for k, v in cookie_dict.items()])
                 full_cookies = f"{headers['cookie']}; sessionid={sessionid}; {cookie_str}"
 
-                dp_uploaded = False
-                if chat_id in user_photos and os.path.exists(user_photos[chat_id]):
-                    dp_uploaded = upload_profile_pic(sessionid, csrftoken, user_photos[chat_id], proxies)
-
                 result_msg = (
                     f"✅ **Account Created Successfully!**\n"
-                    f"👤 Name: {full_name}\n"
                     f"👤 Username: `{username}`\n"
                     f"🔑 Password: `{password}`\n"
                     f"📧 Email: `{email}`\n"
-                    f"📅 DOB: {day}/{month}/{year}\n"
-                    f"🖼️ DP Uploaded: {'✅' if dp_uploaded else '❌'}\n"
                     f"🍪 Cookies:\n`{full_cookies}`"
                 )
                 bot.send_message(chat_id, result_msg, parse_mode="Markdown")
                 return True
 
-            # Error handling
-            if '"error_type":"username_is_taken"' in response.text:
+            # Handle specific errors
+            if '"error_type":"username_is_taken"' in full_response:
                 username = generate_username(firstname + random.choice(string.ascii_lowercase))
                 data['username'] = username
                 continue
-            elif '"error_type":"bad_password"' in response.text:
+            elif '"error_type":"bad_password"' in full_response:
                 password = f"{firstname.strip()}@{random.randint(100, 999)}"
                 data['enc_password'] = f'#PWD_INSTAGRAM_BROWSER:0:{round(time.time())}:{password}'
                 continue
-            elif '"error_type":"signup_code_expired"' in response.text:
+            elif '"error_type":"signup_code_expired"' in full_response:
                 bot.send_message(chat_id, "⏰ Signup code expired. Resending OTP...")
                 new_headers, new_proxies = get_headers()
-                success, msg, _, _, _ = send_verification_email(new_headers, email, new_proxies)
+                success, msg = send_verification_email(new_headers, email, new_proxies)
                 if success:
                     bot.send_message(chat_id, f"✅ New OTP sent to `{email}`. Please reply with the new code.", parse_mode="Markdown")
                     user_sessions[chat_id] = {
                         'state': 'waiting_otp',
                         'email': email,
                         'headers': new_headers,
+                        'signup_code': None,
                         'proxies': new_proxies,
                     }
                     return False
@@ -391,24 +328,20 @@ def create_instagram_account(headers, email, signup_code, chat_id, proxies):
                     bot.send_message(chat_id, f"❌ Failed to resend OTP: {msg}")
                     return False
 
-            error_msg = response.text[:800]
+            # Unknown error – show full response
+            error_msg = f"Status: {status_code}\nResponse: {full_response[:800]}"
             bot.send_message(chat_id, f"❌ Attempt {attempt} failed.\nError: {error_msg}")
-            time.sleep(5)
+            # Continue to next attempt with fresh headers
 
         except Exception as e:
             bot.send_message(chat_id, f"❌ Exception: {str(e)}")
             time.sleep(10)
 
-    bot.send_message(chat_id, "❌ All attempts failed. Try again later.")
+    bot.send_message(chat_id, "❌ All attempts failed. Try again later with a new proxy or email.")
     return False
 
-def generate_username(firstname):
-    base = firstname.lower().replace(" ", "")
-    suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=5))
-    return f"{base}_{suffix}"
-
 # ============================================================
-#  PROXY MANAGEMENT COMMANDS
+#  🧰 PROXY MANAGEMENT COMMANDS
 # ============================================================
 @bot.message_handler(commands=['addproxy'])
 def handle_addproxy(message):
@@ -468,36 +401,7 @@ def handle_clearproxies(message):
     bot.reply_to(message, "🗑️ All proxies cleared.")
 
 # ============================================================
-#  📷 DP SETUP
-# ============================================================
-@bot.message_handler(commands=['setdp'])
-def handle_setdp(message):
-    chat_id = message.chat.id
-    if OWNER_IDS and chat_id not in OWNER_IDS:
-        bot.reply_to(message, "⛔ Unauthorized.")
-        return
-    bot.reply_to(message, "📸 Please send a photo with caption `/setdp` to set it as your profile picture.")
-
-@bot.message_handler(content_types=['photo'])
-def handle_photo(message):
-    chat_id = message.chat.id
-    if OWNER_IDS and chat_id not in OWNER_IDS:
-        return
-    caption = message.caption or ""
-    if "/setdp" not in caption:
-        return
-    file_id = message.photo[-1].file_id
-    file_info = bot.get_file(file_id)
-    downloaded_file = bot.download_file(file_info.file_path)
-    os.makedirs("temp", exist_ok=True)
-    file_path = f"temp/dp_{chat_id}.jpg"
-    with open(file_path, 'wb') as f:
-        f.write(downloaded_file)
-    user_photos[chat_id] = file_path
-    bot.reply_to(message, "✅ Profile picture saved! It will be used for your next account creation.")
-
-# ============================================================
-#  🚀 ACCOUNT CREATION WITH CAPTCHA
+#  🚀 ACCOUNT CREATION COMMANDS
 # ============================================================
 @bot.message_handler(commands=['start'])
 def handle_start(message):
@@ -512,11 +416,9 @@ def handle_start(message):
         "/removeproxy <proxy> – remove a proxy\n"
         "/listproxies – list all saved proxies\n"
         "/clearproxies – remove all proxies\n\n"
-        "📸 **Profile Picture:**\n"
-        "/setdp – send a photo with this caption to save it\n\n"
         "🚀 **Create Account:**\n"
         "/create <email> – start account creation\n\n"
-        "If a CAPTCHA appears, the bot will send the image and ask you to solve it."
+        "Example: `/create test@example.com`"
     )
 
 @bot.message_handler(commands=['create'])
@@ -526,69 +428,39 @@ def handle_create(message):
         bot.reply_to(message, "⛔ Unauthorized.")
         return
 
-    if chat_id in user_sessions and user_sessions[chat_id].get('state') in ['waiting_otp', 'waiting_captcha']:
-        bot.reply_to(message, "⏳ You have a pending OTP or CAPTCHA. Please complete it first.")
+    if chat_id in user_sessions and user_sessions[chat_id].get('state') == 'waiting_otp':
+        bot.reply_to(message, "⏳ You have a pending OTP. Please enter the code.")
         return
 
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2 or not parts[1].strip():
-        bot.reply_to(message, "❌ Please provide an email.\nExample: `/create test@gmail.com`")
+        bot.reply_to(message, "❌ Please provide an email.\nExample: `/create test@example.com`")
         return
     email = parts[1].strip()
 
     bot.reply_to(message, f"🔄 Starting for `{email}` ...", parse_mode="Markdown")
 
-    headers, proxies = get_headers()
-    success, response, headers, captcha_url, captcha_id = send_verification_email(headers, email, proxies)
-
-    if success:
-        bot.send_message(chat_id, f"✅ OTP sent to `{email}`. Reply with the 6‑digit code.", parse_mode="Markdown")
-        user_sessions[chat_id] = {
-            'state': 'waiting_otp',
-            'email': email,
-            'headers': headers,
-            'proxies': proxies,
-        }
-        return
-    elif response == "require_captcha":
-        # Try to get CAPTCHA image
-        if captcha_url:
-            try:
-                captcha_response = requests.get(captcha_url, proxies=proxies, timeout=30)
-                if captcha_response.status_code == 200:
-                    captcha_image = BytesIO(captcha_response.content)
-                    bot.send_photo(chat_id, captcha_image, caption="🧩 **CAPTCHA Required**\nPlease enter the text you see in the image.\n\nReply with the text.")
-                    user_sessions[chat_id] = {
-                        'state': 'waiting_captcha',
-                        'email': email,
-                        'headers': headers,
-                        'proxies': proxies,
-                        'captcha_id': captcha_id,
-                        'captcha_url': captcha_url,
-                    }
-                    return
-                else:
-                    bot.send_message(chat_id, f"⚠️ Could not download CAPTCHA from URL. Trying fallback...")
-            except Exception as e:
-                bot.send_message(chat_id, f"⚠️ Error downloading CAPTCHA: {str(e)}. Trying fallback...")
-
-        # Fallback: use get_captcha endpoint
-        ok, image_data = get_captcha_image_from_endpoint(headers, proxies)
-        if ok:
-            captcha_image = BytesIO(image_data)
-            bot.send_photo(chat_id, captcha_image, caption="🧩 **CAPTCHA Required**\nPlease enter the text you see in the image.\n\nReply with the text.")
+    # Try up to 3 times to send OTP
+    for attempt in range(3):
+        headers, proxies = get_headers()
+        success, response_text = send_verification_email(headers, email, proxies)
+        if success:
+            bot.send_message(chat_id, f"✅ OTP sent to `{email}`. Reply with the 6‑digit code.", parse_mode="Markdown")
             user_sessions[chat_id] = {
-                'state': 'waiting_captcha',
+                'state': 'waiting_otp',
                 'email': email,
                 'headers': headers,
+                'signup_code': None,
                 'proxies': proxies,
-                'captcha_id': None,
-                'captcha_url': None,
             }
+            return
         else:
-            bot.send_message(chat_id, f"❌ Could not retrieve CAPTCHA image.\nError: {image_data}")
-    else:
-        bot.send_message(chat_id, f"❌ Failed to send OTP.\n{response}")
+            if attempt < 2:
+                bot.send_message(chat_id, f"⚠️ OTP sending failed (attempt {attempt+1}). Retrying...")
+                time.sleep(10)
+            else:
+                bot.send_message(chat_id, f"❌ Failed to send OTP after 3 attempts.\nError: {response_text}")
+                return
 
 @bot.message_handler(func=lambda msg: True)
 def handle_all_messages(message):
@@ -597,55 +469,25 @@ def handle_all_messages(message):
         bot.reply_to(message, "ℹ️ Use `/create <email>` to start.")
         return
 
-    session_data = user_sessions[chat_id]
-    state = session_data.get('state')
-
-    if state == 'waiting_captcha':
-        solution = message.text.strip()
-        if not solution:
-            bot.reply_to(message, "❌ Please enter the CAPTCHA text.")
-            return
-
-        headers = session_data['headers']
-        email = session_data['email']
-        proxies = session_data.get('proxies')
-        captcha_id = session_data.get('captcha_id')
-
-        success, response, headers, _, _ = send_verification_email(headers, email, proxies, solution, captcha_id)
-
-        if success:
-            bot.send_message(chat_id, f"✅ OTP sent to `{email}`. Reply with the 6‑digit code.", parse_mode="Markdown")
-            user_sessions[chat_id] = {
-                'state': 'waiting_otp',
-                'email': email,
-                'headers': headers,
-                'proxies': proxies,
-            }
-        else:
-            if response == "require_captcha":
-                bot.send_message(chat_id, "❌ CAPTCHA solution was incorrect. Please try again with a new image.")
-                # Remove session to let user retry
-                del user_sessions[chat_id]
-            else:
-                bot.send_message(chat_id, f"❌ Failed to send OTP after CAPTCHA.\n{response}")
-                del user_sessions[chat_id]
-
-    elif state == 'waiting_otp':
+    session = user_sessions[chat_id]
+    if session.get('state') == 'waiting_otp':
         otp = message.text.strip()
         if not otp.isdigit() or len(otp) != 6:
             bot.reply_to(message, "❌ Enter a valid 6‑digit OTP.")
             return
 
-        headers = session_data['headers']
-        email = session_data['email']
-        proxies = session_data.get('proxies')
+        headers = session['headers']
+        email = session['email']
+        proxies = session.get('proxies')
         response = validate_otp(headers, email, otp, proxies)
 
         if response and 'status":"ok' in response.text:
             signup_code = response.json().get('signup_code')
             if signup_code:
                 bot.send_message(chat_id, "✅ OTP validated. Creating account...")
+                # clear OTP state
                 del user_sessions[chat_id]
+                # start creation (may re-add session if signup expires)
                 create_instagram_account(headers, email, signup_code, chat_id, proxies)
             else:
                 bot.send_message(chat_id, "❌ No signup_code received.")
@@ -660,5 +502,5 @@ def handle_all_messages(message):
 # ============================================================
 if __name__ == "__main__":
     init_db()
-    print("🤖 Bot started with improved proxy validation.")
+    print("🤖 Bot started with proxy rotation, anti-rate-limit, and proxy management.")
     bot.infinity_polling()
