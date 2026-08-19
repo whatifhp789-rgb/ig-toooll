@@ -353,12 +353,26 @@ def run_automation(chat_id):
             if phone_input.is_visible() and phone:
                 phone_input.fill(phone)
 
+        # --- FILL PASSWORD (robust) ---
         logger.info("📝 Filling password...")
-        pwd_input = page.locator('input[name="password"]')
+        pwd_input = page.locator('input[type="password"]')
         if pwd_input.is_visible():
             pwd_input.fill(password)
+            logger.info("Filled password using type='password'.")
         else:
-            raise Exception("Password field not found.")
+            # fallback: try name="password"
+            pwd_input = page.locator('input[name="password"]')
+            if pwd_input.is_visible():
+                pwd_input.fill(password)
+                logger.info("Filled password using name='password'.")
+            else:
+                # fallback: placeholder
+                pwd_input = page.locator('input[placeholder*="Password"]')
+                if pwd_input.is_visible():
+                    pwd_input.fill(password)
+                    logger.info("Filled password using placeholder.")
+                else:
+                    raise Exception("Password field not found.")
 
         logger.info("📝 Filling date of birth...")
         # Day
