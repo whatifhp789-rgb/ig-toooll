@@ -6,8 +6,8 @@ from io import BytesIO
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 
 # ====== CHANGE THESE TWO LINES ======
-BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"      # <--- put your token
-OWNER_IDS = [123456789]                # <--- put your Telegram user ID (int)
+BOT_TOKEN = "8760264279:AAHOWTl_pokPjXbQgo25Et8gIy8ISkjJTkE"      # <--- put your token
+OWNER_IDS = [8754004223]                # <--- put your Telegram user ID (int)
 # ===================================
 
 FIXED_PASSWORD = "qwerty9900@"
