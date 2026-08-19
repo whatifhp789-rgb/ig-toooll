@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-# Telegram Bot for Instagram Signup – Email/Phone via Buttons
+# Telegram Bot for Instagram Signup – Email/Phone via Buttons (Multi-Step Fix)
 
 import os, sys, json, time, random, threading, requests, logging, sqlite3
 from io import BytesIO
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 
-# ====== CHANGE THESE TWO LINES ======
-BOT_TOKEN = "8760264279:AAHOWTl_pokPjXbQgo25Et8gIy8ISkjJTkE"      # <--- put your token
+# ====== CHANGE THESE TWO LINES ONLY ======
+BOT_TOKEN = "8760264279:AAHV1UCXF_molZCaSjuFIO7ZqnEzG5tiAt8"      # <--- put your bot token (string)
 OWNER_IDS = [8754004223]                # <--- put your Telegram user ID (int)
-# ===================================
+# =======================================
 
 FIXED_PASSWORD = "qwerty9900@"
 INSTA_URL = "https://www.instagram.com/accounts/emailsignup/"
@@ -224,7 +224,6 @@ def run_automation(chat_id):
         session.running = False
         return
 
-    # Prefer email if both exist
     if email:
         login_value = email
         login_type = "email"
@@ -242,6 +241,7 @@ def run_automation(chat_id):
         playwright, browser, page = start_browser()
         send_message(chat_id, "🚀 Browser launched. Starting signup...")
 
+        # Step 1: Navigate
         logger.info("🌐 Navigating to Instagram signup page...")
         page.goto(INSTA_URL, timeout=NAV_TIMEOUT)
         page.wait_for_load_state("networkidle")
@@ -249,8 +249,10 @@ def run_automation(chat_id):
         if detect_captcha(page):
             if not handle_captcha_telegram(page, session):
                 raise Exception("CAPTCHA failed")
+            page.wait_for_load_state("networkidle")
 
-        logger.info("📝 Filling form...")
+        # Step 2: Enter email/phone and click "Next"
+        logger.info("📝 Filling email/phone...")
         email_phone_input = page.locator('input[name="emailOrPhone"]')
         if email_phone_input.is_visible():
             email_phone_input.fill(login_value)
@@ -263,6 +265,36 @@ def run_automation(chat_id):
             if phone_input.is_visible() and phone:
                 phone_input.fill(phone)
 
+        # Click "Next" or "Continue"
+        logger.info("🔘 Clicking 'Next' button...")
+        next_btn = page.locator('button[type="submit"]:visible')
+        if next_btn.is_visible():
+            next_btn.click()
+            logger.info("Clicked submit button as Next.")
+        else:
+            next_btn = page.get_by_text("Next", exact=True)
+            if next_btn.is_visible():
+                next_btn.click()
+                logger.info("Clicked 'Next' text.")
+            else:
+                next_btn = page.get_by_text("Continue", exact=True)
+                if next_btn.is_visible():
+                    next_btn.click()
+                    logger.info("Clicked 'Continue' text.")
+                else:
+                    raise Exception("Could not find 'Next' or 'Continue' button.")
+
+        page.wait_for_load_state("networkidle")
+        page.locator('input[name="fullName"]').wait_for(timeout=10000)
+        logger.info("Second page loaded.")
+
+        if detect_captcha(page):
+            if not handle_captcha_telegram(page, session):
+                raise Exception("CAPTCHA after first step")
+            page.wait_for_load_state("networkidle")
+
+        # Step 3: Fill name, username, password
+        logger.info("📝 Filling name, username, password...")
         name_input = page.locator('input[name="fullName"]')
         if name_input.is_visible():
             name_input.fill(full_name)
@@ -274,23 +306,34 @@ def run_automation(chat_id):
             pwd_input.fill(password)
 
         send_message(chat_id, f"✅ Form filled. Using {login_type}: {login_value}")
-        logger.info("Form filled.")
+        logger.info("All fields filled.")
 
-        submit_btn = page.locator('button[type="submit"]')
-        if submit_btn.is_visible():
-            submit_btn.click()
+        # Step 4: Click "Sign up"
+        logger.info("🔘 Clicking 'Sign up' button...")
+        signup_btn = page.locator('button[type="submit"]:visible')
+        if signup_btn.is_visible():
+            signup_btn.click()
+            logger.info("Clicked submit button as Sign up.")
         else:
-            submit_btn = page.get_by_text("Sign up", exact=True)
-            if submit_btn.is_visible():
-                submit_btn.click()
+            signup_btn = page.get_by_text("Sign up", exact=True)
+            if signup_btn.is_visible():
+                signup_btn.click()
+                logger.info("Clicked 'Sign up' text.")
             else:
-                raise Exception("Submit button not found.")
+                signup_btn = page.locator('form button[type="submit"]:visible')
+                if signup_btn.is_visible():
+                    signup_btn.click()
+                    logger.info("Clicked fallback submit button.")
+                else:
+                    raise Exception("Submit button not found.")
 
         page.wait_for_load_state("networkidle")
         if detect_captcha(page):
             if not handle_captcha_telegram(page, session):
-                raise Exception("CAPTCHA after submit")
+                raise Exception("CAPTCHA after signup")
+            page.wait_for_load_state("networkidle")
 
+        # Step 5: OTP verification
         logger.info("⏳ Waiting for OTP page...")
         otp_input = page.locator('input[name="code"]')
         otp_input.wait_for(timeout=ELEMENT_TIMEOUT)
@@ -304,7 +347,7 @@ def run_automation(chat_id):
             raise ValueError("OTP empty")
 
         otp_input.fill(otp)
-        verify_btn = page.locator('button[type="submit"]')
+        verify_btn = page.locator('button[type="submit"]:visible')
         if verify_btn.is_visible():
             verify_btn.click()
         else:
@@ -314,6 +357,7 @@ def run_automation(chat_id):
             else:
                 raise Exception("Verify button not found.")
 
+        # Step 6: Check final result
         try:
             page.wait_for_url("**/accounts/emailsignup/**", timeout=5000, state='detached')
             page.wait_for_load_state("networkidle")
@@ -352,14 +396,12 @@ def run_automation(chat_id):
 
 # ========== HANDLERS ==========
 def handle_start(chat_id, message_id=None):
-    """Show inline keyboard with email/phone options."""
     keyboard = {
         "inline_keyboard": [
             [{"text": "📧 Signup with Email", "callback_data": "choose_email"}],
             [{"text": "📱 Signup with Phone", "callback_data": "choose_phone"}]
         ]
     }
-    # Check if already has credentials
     creds = get_credential(chat_id)
     status = ""
     if creds["email"]:
@@ -385,7 +427,6 @@ def handle_callback_query(cq):
     frm = cq.get('from', {})
     user_id = frm.get('id')
 
-    # Owner check
     if user_id not in OWNER_IDS:
         answer_callback_query(callback_id, "❌ Not authorized.", show_alert=True)
         return
@@ -425,27 +466,24 @@ def handle_message(msg):
         send_message(chat_id, "❌ Not authorized.")
         return
 
-    # Check if waiting for credential input
     with sessions_lock:
         session = sessions.get(chat_id)
     if session and session.awaiting_credential:
         cred_type = session.awaiting_credential
         if cred_type == "email":
-            # validate email
             if '@' not in text or '.' not in text:
-                send_message(chat_id, "❌ Invalid email address. Please send again or /cancel")
+                send_message(chat_id, "❌ Invalid email. Please send again or /cancel")
                 return
             set_email(chat_id, text)
             send_message(chat_id, f"✅ Email set to: {text}")
             session.awaiting_credential = None
-            # Start automation automatically
             send_message(chat_id, "🚀 Starting signup automatically...")
             thread = threading.Thread(target=run_automation, args=(chat_id,), daemon=True)
             thread.start()
             return
         elif cred_type == "phone":
             if not text.startswith('+') or not text[1:].isdigit():
-                send_message(chat_id, "❌ Invalid phone number. Use country code, e.g., +911234567890")
+                send_message(chat_id, "❌ Invalid phone. Use country code, e.g., +911234567890")
                 return
             set_phone(chat_id, text)
             send_message(chat_id, f"✅ Phone set to: {text}")
@@ -455,12 +493,10 @@ def handle_message(msg):
             thread.start()
             return
 
-    # Normal command handling
     if text.startswith('/'):
         cmd = text.split()[0].lower()
         if cmd == '/start':
             handle_start(chat_id)
-
         elif cmd == '/setemail':
             parts = text.split(maxsplit=1)
             if len(parts) < 2 or not parts[1]:
@@ -472,7 +508,6 @@ def handle_message(msg):
                 return
             set_email(chat_id, new_email)
             send_message(chat_id, f"✅ Email set to: {new_email}")
-
         elif cmd == '/setphone':
             parts = text.split(maxsplit=1)
             if len(parts) < 2 or not parts[1]:
@@ -484,7 +519,6 @@ def handle_message(msg):
                 return
             set_phone(chat_id, new_phone)
             send_message(chat_id, f"✅ Phone set to: {new_phone}")
-
         elif cmd == '/status':
             creds = get_credential(chat_id)
             msg = "📊 Current status:\n"
@@ -495,23 +529,15 @@ def handle_message(msg):
             if not creds["email"] and not creds["phone"]:
                 msg += "❌ No credential set. Use /start to choose."
             send_message(chat_id, msg)
-
         elif cmd == '/cancel':
-            with sessions_lock:
-                session = sessions.get(chat_id)
-            if session:
-                if session.awaiting_credential:
-                    session.awaiting_credential = None
-                    send_message(chat_id, "✅ Cancelled credential input.")
-                else:
-                    send_message(chat_id, "No pending action.")
+            if session and session.awaiting_credential:
+                session.awaiting_credential = None
+                send_message(chat_id, "✅ Cancelled credential input.")
             else:
                 send_message(chat_id, "No pending action.")
-
         else:
             send_message(chat_id, "Unknown command. Use /start, /setemail, /setphone, /status, /cancel")
     else:
-        # If not a command, but we are not waiting for credential, just ignore
         send_message(chat_id, "Use commands or /start to begin.")
 
 # ========== POLLING ==========
