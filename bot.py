@@ -23,7 +23,7 @@ if not BOT_TOKEN:
     print("❌ BOT_TOKEN not set")
     sys.exit(1)
 
-OWNER_IDS = [int(x.strip()) for x in os.getenv("OWNER_IDS", "").split(",") if x.strip()]
+OWNER_IDS = [int(x.strip()) for x in os.getenv("8754004223", "").split(",") if x.strip()]
 if not OWNER_IDS:
     print("❌ OWNER_IDS not set")
     sys.exit(1)
