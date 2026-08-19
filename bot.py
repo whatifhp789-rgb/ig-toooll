@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Telegram Bot for Instagram Signup – DOB detection with debugging
+# Telegram Bot for Instagram Signup – Final Working Version
 
 import os, sys, json, time, random, threading, requests, logging, sqlite3
 from io import BytesIO
@@ -316,13 +316,6 @@ def fill_dob_field(page, field, value, order_index):
                 continue
             visible_fields.append(el)
 
-        # Log all visible fields for debugging
-        logger.debug("Visible fields after filtering:")
-        for idx, el in enumerate(visible_fields):
-            tag = el.evaluate('el => el.tagName.toLowerCase()')
-            attrs = el.evaluate('el => ({name: el.name, id: el.id, placeholder: el.placeholder, type: el.type})')
-            logger.debug(f"  {idx}: {tag} -> {attrs}")
-
         # Find password field index
         password_field = page.locator('input[type="password"]').first
         if password_field.is_visible():
@@ -386,6 +379,8 @@ def start_browser(proxy_str=None):
     logger.info("🔄 Launching Chromium (headless)...")
     browser = playwright.chromium.launch(
         headless=True,
+        # If you want to use Google Chrome instead of Chromium, uncomment the next line and comment the one above.
+        # channel="chrome",   # <-- requires Chrome installed
         args=['--disable-blink-features=AutomationControlled', '--disable-dev-shm-usage']
     )
     context = browser.new_context(
