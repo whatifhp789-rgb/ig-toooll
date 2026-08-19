@@ -6,7 +6,7 @@ RUN apt-get update && apt-get install -y \
     gnupg \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Playwright and its browser dependencies
+# Install Playwright and its browser dependencies (using pre-built wheels)
 RUN pip install --no-cache-dir playwright==1.42.0 && \
     playwright install chromium && \
     playwright install-deps
