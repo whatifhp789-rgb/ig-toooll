@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Telegram Bot for Instagram Signup – Selenium Final (No webdriver-manager)
+# Telegram Bot for Instagram Signup – Selenium Final
 
 import os, sys, json, time, random, threading, requests, logging, sqlite3
 from io import BytesIO
@@ -260,7 +260,6 @@ def start_browser(proxy_str=None):
         else:
             logger.warning("Invalid proxy, ignoring.")
     
-    # Use the chromedriver from PATH (installed in Docker)
     driver = webdriver.Chrome(options=options)
     driver.set_page_load_timeout(NAV_TIMEOUT)
     driver.implicitly_wait(ELEMENT_TIMEOUT)
@@ -375,7 +374,6 @@ def run_automation(chat_id):
 
         # ---- Date of Birth ----
         logger.info("📝 Filling date of birth...")
-        # Try label-container first
         try:
             dob_label = driver.find_element(By.XPATH, "//label[contains(text(), 'Date of birth') or contains(text(), 'Birthday')]")
             container = dob_label.find_element(By.XPATH, "./ancestor::div[1]")
@@ -416,7 +414,6 @@ def run_automation(chat_id):
                 year_field.send_keys(str(year))
                 logger.info("Filled DOB by name.")
             except:
-                # Try placeholders
                 try:
                     day_field = driver.find_element(By.XPATH, "//input[@placeholder='DD'] | //select[@placeholder='DD']")
                     month_field = driver.find_element(By.XPATH, "//input[@placeholder='MM'] | //select[@placeholder='MM']")
