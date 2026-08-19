@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Instagram Account Creator Bot – Fixed 429 Handling
+# Instagram Account Creator Bot – API-Based Signup
 
 import os
 import random
@@ -9,201 +9,272 @@ import names
 import requests
 import telebot
 import json
+import re
 
 # ============================================================
-#  ✏️ EDIT THESE TWO LINES – PUT YOUR VALUES HERE
+#  🔐 YOUR BOT CREDENTIALS
 # ============================================================
-BOT_TOKEN = "8760264279:AAGFGJ-Y0s4BKL9ATpuT8lBUZeQ2ntj5fq0"          # <-- Paste your bot token
-OWNER_IDS = [8754004223]                    # <-- Paste your Telegram user ID (integer)
+BOT_TOKEN = "8760264279:AAGFGJ-Y0s4BKL9ATpuT8lBUZeQ2ntj5fq0"          # <-- Put your bot token
+OWNER_IDS = [8754004223]                    # <-- Put your Telegram user ID(s)
 # ============================================================
 
-PROXY_STR = ""   # optional proxy
+# ============================================================
+#  🌐 PROXY LIST – Add your proxies here
+# ============================================================
+PROXY_LIST = [
+    # "http://user1:pass1@123.45.67.89:8080",
+    # "http://user2:pass2@98.76.54.32:3128",
+]
+# ============================================================
+
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+]
+
 proxies = None
-if PROXY_STR:
-    proxies = {"http": PROXY_STR, "https": PROXY_STR}
+proxy_pool = PROXY_LIST.copy()
+
+def get_random_proxy():
+    if proxy_pool:
+        return random.choice(proxy_pool)
+    return None
+
+def get_random_user_agent():
+    return random.choice(USER_AGENTS)
+
+def get_random_delay():
+    return random.randint(3, 8)
 
 bot = telebot.TeleBot(BOT_TOKEN)
 user_sessions = {}
 
-# ============ CORE FUNCTIONS ============
+# ============ CORE API FUNCTIONS ============
 
-def get_headers():
-    """Fetch fresh headers with cookies."""
-    while True:
-        try:
-            an_agent = (
-                f'Mozilla/5.0 (Linux; Android {random.randint(9, 13)}; '
-                f'{"".join(random.choices(string.ascii_uppercase, k=3))}{random.randint(111, 999)}) '
-                f'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/111.0.0.0 Mobile Safari/537.36'
-            )
-            r = requests.get(
-                'https://www.instagram.com/api/v1/web/accounts/login/ajax/',
-                headers={'user-agent': an_agent},
-                proxies=proxies,
-                timeout=30
-            ).cookies
-
-            response1 = requests.get(
-                'https://www.instagram.com/',
-                headers={'user-agent': an_agent},
-                proxies=proxies,
-                timeout=30
-            )
-            appid = response1.text.split('APP_ID":"')[1].split('"')[0]
-            rollout = response1.text.split('rollout_hash":"')[1].split('"')[0]
-
-            headers = {
-                'authority': 'www.instagram.com',
-                'accept': '*/*',
-                'accept-language': 'en-US,en;q=0.9',
-                'content-type': 'application/x-www-form-urlencoded',
-                'cookie': f'dpr=3; csrftoken={r["csrftoken"]}; mid={r["mid"]}; ig_did={r["ig_did"]}',
-                'origin': 'https://www.instagram.com',
-                'referer': 'https://www.instagram.com/accounts/signup/email/',
-                'user-agent': an_agent,
-                'x-csrftoken': r["csrftoken"],
-                'x-ig-app-id': str(appid),
-                'x-instagram-ajax': str(rollout),
-                'x-web-device-id': r["ig_did"],
-            }
-            return headers
-        except Exception:
-            time.sleep(2)
-
-def generate_username(firstname):
-    base = firstname.lower().replace(" ", "")
-    suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=5))
-    return f"{base}_{suffix}"
-
-def send_verification_email(headers, email):
+def get_csrf_token():
+    """Get CSRF token and cookies from Instagram."""
     try:
-        device_id = headers['cookie'].split('mid=')[1].split(';')[0]
-        data = {'device_id': device_id, 'email': email}
-        response = requests.post(
-            'https://www.instagram.com/api/v1/accounts/send_verify_email/',
-            headers=headers, data=data, proxies=proxies, timeout=30
-        )
-        if response.status_code == 200 and 'email_sent":true' in response.text:
-            return True, response.text
-        else:
-            return False, f"Status: {response.status_code}, Response: {response.text[:500]}"
+        an_agent = get_random_user_agent()
+        proxy_str = get_random_proxy()
+        local_proxies = None
+        if proxy_str:
+            local_proxies = {"http": proxy_str, "https": proxy_str}
+
+        # First request to get cookies
+        session = requests.Session()
+        session.headers.update({'user-agent': an_agent})
+        if local_proxies:
+            session.proxies.update(local_proxies)
+
+        # Get main page to set cookies
+        resp = session.get('https://www.instagram.com/')
+        if resp.status_code != 200:
+            return None, None
+
+        # Get CSRF token from cookies
+        csrf_token = session.cookies.get('csrftoken')
+        if not csrf_token:
+            return None, None
+
+        # Get mid and ig_did
+        mid = session.cookies.get('mid', '')
+        ig_did = session.cookies.get('ig_did', '')
+
+        # Extract app_id from page
+        app_id = None
+        match = re.search(r'"APP_ID":"(\d+)"', resp.text)
+        if match:
+            app_id = match.group(1)
+
+        headers = {
+            'authority': 'www.instagram.com',
+            'accept': '*/*',
+            'accept-language': 'en-US,en;q=0.9',
+            'content-type': 'application/x-www-form-urlencoded',
+            'cookie': f'csrftoken={csrf_token}; mid={mid}; ig_did={ig_did}',
+            'origin': 'https://www.instagram.com',
+            'referer': 'https://www.instagram.com/accounts/emailsignup/',
+            'user-agent': an_agent,
+            'x-csrftoken': csrf_token,
+            'x-ig-app-id': app_id or '936619743392459',
+            'x-instagram-ajax': '1',
+            'x-web-device-id': ig_did or '',
+        }
+
+        return headers, session
     except Exception as e:
-        return False, str(e)
+        print(f"CSRF error: {e}")
+        return None, None
 
-def validate_otp(headers, email, code):
+def send_verification_email_api(email):
+    """Send OTP using Instagram's API."""
     try:
-        device_id = headers['cookie'].split('mid=')[1].split(';')[0]
-        data = {'code': code, 'device_id': device_id, 'email': email}
-        response = requests.post(
-            'https://www.instagram.com/api/v1/accounts/check_confirmation_code/',
-            headers=headers, data=data, proxies=proxies, timeout=30
-        )
-        return response
-    except Exception:
-        return None
+        headers, session = get_csrf_token()
+        if not headers:
+            return False, "Failed to get CSRF token"
 
-def create_instagram_account(headers, email, signup_code, chat_id):
+        device_id = headers.get('x-web-device-id') or ''.join(random.choices(string.digits, k=16))
+
+        data = {
+            'device_id': device_id,
+            'email': email,
+        }
+
+        response = session.post(
+            'https://www.instagram.com/api/v1/web/accounts/send_verify_email/',
+            headers=headers,
+            data=data,
+            timeout=30
+        )
+
+        if response.status_code == 200:
+            resp_json = response.json()
+            if resp_json.get('email_sent'):
+                # Store session for later use
+                return True, response, headers, session
+            else:
+                return False, resp_json.get('message', 'Unknown error'), None, None
+        else:
+            return False, f"Status: {response.status_code}", None, None
+
+    except Exception as e:
+        return False, str(e), None, None
+
+def validate_otp_api(email, code, headers, session):
+    """Validate OTP using Instagram's API."""
+    try:
+        device_id = headers.get('x-web-device-id') or ''.join(random.choices(string.digits, k=16))
+
+        data = {
+            'code': code,
+            'device_id': device_id,
+            'email': email,
+        }
+
+        response = session.post(
+            'https://www.instagram.com/api/v1/web/accounts/check_confirmation_code/',
+            headers=headers,
+            data=data,
+            timeout=30
+        )
+
+        if response.status_code == 200:
+            resp_json = response.json()
+            if resp_json.get('status') == 'ok':
+                signup_code = resp_json.get('signup_code')
+                return True, signup_code, headers, session
+            else:
+                return False, resp_json.get('message', 'Invalid OTP'), headers, session
+        else:
+            return False, f"Status: {response.status_code}", headers, session
+
+    except Exception as e:
+        return False, str(e), headers, session
+
+def create_instagram_account_api(email, signup_code, headers, session):
+    """Create account using Instagram's API."""
     firstname = names.get_first_name()
     username = generate_username(firstname)
     password = f"{firstname.strip()}@{random.randint(100, 999)}"
 
+    device_id = headers.get('x-web-device-id') or ''.join(random.choices(string.digits, k=16))
+    client_id = headers.get('cookie', '').split('mid=')[1].split(';')[0] if 'mid=' in headers.get('cookie', '') else device_id
+
     data = {
-        'enc_password': f'#PWD_INSTAGRAM_BROWSER:0:{round(time.time())}:{password}',
+        'enc_password': f'#PWD_INSTAGRAM_BROWSER:0:{int(time.time())}:{password}',
         'email': email,
         'username': username,
         'first_name': firstname,
         'month': random.randint(1, 12),
         'day': random.randint(1, 28),
         'year': random.randint(1990, 2001),
-        'client_id': headers['cookie'].split('mid=')[1].split(';')[0],
+        'client_id': client_id,
         'seamless_login_enabled': '1',
         'tos_version': 'row',
         'force_sign_up_code': signup_code,
     }
 
-    for attempt in range(5):  # more attempts
+    wait_time = 30
+
+    for attempt in range(1, 8):
         try:
-            if attempt > 0:
-                # Get fresh headers for each attempt
-                headers = get_headers()
-                data['client_id'] = headers['cookie'].split('mid=')[1].split(';')[0]
-                # Also regenerate username and password if needed
-                if attempt > 2:
+            delay = get_random_delay()
+            time.sleep(delay)
+
+            if attempt > 1:
+                # Get fresh headers
+                new_headers, new_session = get_csrf_token()
+                if new_headers:
+                    headers = new_headers
+                    session = new_session
+                    data['client_id'] = headers.get('cookie', '').split('mid=')[1].split(';')[0] if 'mid=' in headers.get('cookie', '') else device_id
+
+                if attempt > 3:
                     firstname = names.get_first_name()
                     username = generate_username(firstname)
                     password = f"{firstname.strip()}@{random.randint(100, 999)}"
                     data['username'] = username
-                    data['enc_password'] = f'#PWD_INSTAGRAM_BROWSER:0:{round(time.time())}:{password}'
+                    data['enc_password'] = f'#PWD_INSTAGRAM_BROWSER:0:{int(time.time())}:{password}'
 
-            response = requests.post(
+            response = session.post(
                 'https://www.instagram.com/api/v1/web/accounts/web_create_ajax/',
-                headers=headers, data=data, proxies=proxies, timeout=30
+                headers=headers,
+                data=data,
+                timeout=30
             )
 
-            full_response = response.text
-            status_code = response.status_code
-
-            # If rate limited, wait longer and retry
-            if status_code == 429:
-                wait_time = 60  # seconds
-                bot.send_message(chat_id, f"⏳ Rate limited (429). Waiting {wait_time} seconds before retry...")
+            if response.status_code == 429:
+                bot.send_message(chat_id, f"⏳ Rate limited. Waiting {wait_time} seconds...")
                 time.sleep(wait_time)
+                wait_time *= 2
                 continue
 
-            if '"account_created":true' in full_response:
-                sessionid = response.cookies.get('sessionid')
-                csrftoken = headers['x-csrftoken']
-                cookie_dict = response.cookies.get_dict()
-                cookie_str = "; ".join([f"{k}={v}" for k, v in cookie_dict.items()])
-                full_cookies = f"{headers['cookie']}; sessionid={sessionid}; {cookie_str}"
+            if response.status_code == 200:
+                resp_json = response.json()
 
-                result_msg = (
-                    f"✅ **Account Created Successfully!**\n"
-                    f"👤 Username: `{username}`\n"
-                    f"🔑 Password: `{password}`\n"
-                    f"📧 Email: `{email}`\n"
-                    f"🍪 Cookies:\n`{full_cookies}`"
-                )
-                bot.send_message(chat_id, result_msg, parse_mode="Markdown")
-                return True
+                if resp_json.get('account_created'):
+                    # Success - extract cookies
+                    sessionid = session.cookies.get('sessionid', '')
+                    csrftoken = headers.get('x-csrftoken', '')
+                    cookie_str = f"sessionid={sessionid}; csrftoken={csrftoken}"
 
-            # Check for specific errors
-            if '"error_type":"username_is_taken"' in full_response:
-                username = generate_username(firstname + random.choice(string.ascii_lowercase))
-                data['username'] = username
-                continue
-            elif '"error_type":"bad_password"' in full_response:
-                password = f"{firstname.strip()}@{random.randint(100, 999)}"
-                data['enc_password'] = f'#PWD_INSTAGRAM_BROWSER:0:{round(time.time())}:{password}'
-                continue
-            elif '"error_type":"signup_code_expired"' in full_response:
-                bot.send_message(chat_id, "⏰ Signup code expired. Resending OTP...")
-                headers = get_headers()
-                success, msg = send_verification_email(headers, email)
-                if success:
-                    bot.send_message(chat_id, f"✅ New OTP sent to `{email}`. Please reply with the new code.", parse_mode="Markdown")
-                    user_sessions[chat_id] = {
-                        'state': 'waiting_otp',
-                        'email': email,
-                        'headers': headers,
-                        'signup_code': None,
-                    }
-                    return False
+                    result_msg = (
+                        f"✅ **Account Created Successfully!**\n"
+                        f"👤 Username: `{username}`\n"
+                        f"🔑 Password: `{password}`\n"
+                        f"📧 Email: `{email}`\n"
+                        f"🍪 Cookies: `{cookie_str}`"
+                    )
+                    return True, result_msg
+
+                # Handle specific errors
+                error_type = resp_json.get('error_type', '')
+                if error_type == 'username_is_taken':
+                    username = generate_username(firstname + random.choice(string.ascii_lowercase))
+                    data['username'] = username
+                    continue
+                elif error_type == 'bad_password':
+                    password = f"{firstname.strip()}@{random.randint(100, 999)}"
+                    data['enc_password'] = f'#PWD_INSTAGRAM_BROWSER:0:{int(time.time())}:{password}'
+                    continue
+                elif error_type == 'signup_code_expired':
+                    return False, "⏰ Signup code expired. Please restart with /create."
                 else:
-                    bot.send_message(chat_id, f"❌ Failed to resend OTP: {msg}")
-                    return False
+                    return False, f"Error: {resp_json.get('message', 'Unknown error')}"
 
-            # Unknown error – show full response
-            error_msg = f"Status: {status_code}\nResponse: {full_response[:800]}"
-            bot.send_message(chat_id, f"❌ Attempt {attempt+1} failed.\nError: {error_msg}")
-            time.sleep(5)
+            else:
+                return False, f"Status: {response.status_code}"
 
         except Exception as e:
-            bot.send_message(chat_id, f"❌ Exception {attempt+1}: {str(e)}")
-            time.sleep(5)
+            time.sleep(10)
 
-    bot.send_message(chat_id, "❌ All attempts failed. Try again later or use a different email/proxy.")
-    return False
+    return False, "All attempts failed. Try again later."
+
+def generate_username(firstname):
+    base = firstname.lower().replace(" ", "")
+    suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=5))
+    return f"{base}_{suffix}"
 
 # ============ BOT HANDLERS ============
 
@@ -216,8 +287,8 @@ def handle_start(message):
     bot.reply_to(message,
         "🤖 **Instagram Account Creator Bot**\n\n"
         "Send `/create <email>` to start.\n"
-        "Example: `/create test@example.com`\n\n"
-        "You'll receive OTP – reply with the 6‑digit code."
+        "Example: `/create test@gmail.com`\n\n"
+        "Bot uses Instagram's official API for fast creation."
     )
 
 @bot.message_handler(commands=['create'])
@@ -233,31 +304,30 @@ def handle_create(message):
 
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2 or not parts[1].strip():
-        bot.reply_to(message, "❌ Please provide an email.\nExample: `/create test@example.com`")
+        bot.reply_to(message, "❌ Please provide an email.\nExample: `/create test@gmail.com`")
         return
     email = parts[1].strip()
 
     bot.reply_to(message, f"🔄 Starting for `{email}` ...", parse_mode="Markdown")
 
-    # Try up to 3 times to send OTP
+    # Try to send OTP
     for attempt in range(3):
-        headers = get_headers()
-        success, response_text = send_verification_email(headers, email)
+        success, result, headers, session = send_verification_email_api(email)
         if success:
             bot.send_message(chat_id, f"✅ OTP sent to `{email}`. Reply with the 6‑digit code.", parse_mode="Markdown")
             user_sessions[chat_id] = {
                 'state': 'waiting_otp',
                 'email': email,
                 'headers': headers,
-                'signup_code': None,
+                'session': session,
             }
             return
         else:
             if attempt < 2:
-                bot.send_message(chat_id, f"⚠️ OTP sending failed (attempt {attempt+1}). Retrying...")
+                bot.send_message(chat_id, f"⚠️ OTP failed (attempt {attempt+1}). Retrying...")
                 time.sleep(5)
             else:
-                bot.send_message(chat_id, f"❌ Failed to send OTP after 3 attempts.\nError: {response_text}")
+                bot.send_message(chat_id, f"❌ Failed to send OTP.\n{result}")
                 return
 
 @bot.message_handler(func=lambda msg: True)
@@ -267,33 +337,33 @@ def handle_all_messages(message):
         bot.reply_to(message, "ℹ️ Use `/create <email>` to start.")
         return
 
-    session = user_sessions[chat_id]
-    if session.get('state') == 'waiting_otp':
+    session_data = user_sessions[chat_id]
+    if session_data.get('state') == 'waiting_otp':
         otp = message.text.strip()
         if not otp.isdigit() or len(otp) != 6:
             bot.reply_to(message, "❌ Enter a valid 6‑digit OTP.")
             return
 
-        headers = session['headers']
-        email = session['email']
-        response = validate_otp(headers, email, otp)
+        email = session_data['email']
+        headers = session_data['headers']
+        session = session_data['session']
 
-        if response and 'status":"ok' in response.text:
-            signup_code = response.json().get('signup_code')
-            if signup_code:
-                bot.send_message(chat_id, "✅ OTP validated. Creating account...")
-                # clear OTP state but keep session for potential resend
-                del user_sessions[chat_id]
-                create_instagram_account(headers, email, signup_code, chat_id)
-            else:
-                bot.send_message(chat_id, "❌ No signup_code received.")
-                del user_sessions[chat_id]
+        success, result, new_headers, new_session = validate_otp_api(email, otp, headers, session)
+
+        if success:
+            signup_code = result
+            bot.send_message(chat_id, "✅ OTP validated. Creating account...")
+            del user_sessions[chat_id]
+
+            # Create account
+            created, msg = create_instagram_account_api(email, signup_code, new_headers, new_session)
+            bot.send_message(chat_id, msg, parse_mode="Markdown")
         else:
-            bot.reply_to(message, "❌ Invalid OTP. Try again or /create.")
+            bot.reply_to(message, f"❌ {result}")
     else:
         bot.reply_to(message, "ℹ️ Use `/create <email>` to start.")
 
 # ============ MAIN ============
 if __name__ == "__main__":
-    print("🤖 Bot started polling...")
+    print("🤖 Bot started with API-based signup...")
     bot.infinity_polling()
