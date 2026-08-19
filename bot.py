@@ -1,755 +1,256 @@
 #!/usr/bin/env python3
-# Telegram Bot for Instagram Signup – Selenium Final
+# Instagram Account Creator Bot – Hardcoded Credentials
 
-import os, sys, json, time, random, threading, requests, logging, sqlite3
-from io import BytesIO
-from datetime import datetime
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, NoSuchElementException
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
+import os
+import random
+import string
+import time
+import names
+import requests
+import telebot
 
-# ====== CHANGE THESE TWO LINES ONLY ======
-BOT_TOKEN = "8760264279:AAH3BT5mjdYhE6UWbesX07pSDe8ehy1QDSw"
-OWNER_IDS = [8754004223]
-# =======================================
+# ============================================================
+#  ✏️ EDIT THESE TWO LINES – PUT YOUR VALUES HERE
+# ============================================================
+BOT_TOKEN = "8760264279:AAGFGJ-Y0s4BKL9ATpuT8lBUZeQ2ntj5fq0"          # <-- Paste your bot token (string)
+OWNER_IDS = [8754004223]                    # <-- Paste your Telegram user ID (integer, list)
+# ============================================================
+# If you want to allow everyone, set OWNER_IDS = []
 
-FIXED_PASSWORD = "qwerty9900"
-INSTA_URL = "https://www.instagram.com/accounts/emailsignup/"
-NAV_TIMEOUT = 30          # seconds
-ELEMENT_TIMEOUT = 15
+# Optional: Proxy (if you want to use one)
+PROXY_STR = ""   # e.g., "http://user:pass@ip:port" – leave empty if not used
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
-DB_FILE = "bot_state.db"
-API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
+# ============================================================
 
-# -------------------- DB helpers --------------------
-def init_db():
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute('CREATE TABLE IF NOT EXISTS bot_state (key TEXT PRIMARY KEY, value TEXT)')
-    c.execute('CREATE TABLE IF NOT EXISTS user_creds (chat_id INTEGER PRIMARY KEY, email TEXT, phone TEXT)')
-    c.execute('CREATE TABLE IF NOT EXISTS user_proxies (chat_id INTEGER PRIMARY KEY, proxy TEXT)')
-    conn.commit()
-    conn.close()
+proxies = None
+if PROXY_STR:
+    proxies = {"http": PROXY_STR, "https": PROXY_STR}
 
-def get_credential(chat_id):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("SELECT email, phone FROM user_creds WHERE chat_id=?", (chat_id,))
-    row = c.fetchone()
-    conn.close()
-    if row:
-        return {"email": row[0], "phone": row[1]}
-    return {"email": None, "phone": None}
+bot = telebot.TeleBot(BOT_TOKEN)
+user_sessions = {}  # chat_id -> state
 
-def set_email(chat_id, email):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    creds = get_credential(chat_id)
-    phone = creds.get("phone")
-    c.execute("REPLACE INTO user_creds (chat_id, email, phone) VALUES (?, ?, ?)", 
-              (chat_id, email, phone))
-    conn.commit()
-    conn.close()
+# ============ CORE FUNCTIONS ============
 
-def set_phone(chat_id, phone):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    creds = get_credential(chat_id)
-    email = creds.get("email")
-    c.execute("REPLACE INTO user_creds (chat_id, email, phone) VALUES (?, ?, ?)", 
-              (chat_id, email, phone))
-    conn.commit()
-    conn.close()
-
-def get_proxy(chat_id):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("SELECT proxy FROM user_proxies WHERE chat_id=?", (chat_id,))
-    row = c.fetchone()
-    conn.close()
-    return row[0] if row else None
-
-def set_proxy(chat_id, proxy):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("REPLACE INTO user_proxies (chat_id, proxy) VALUES (?, ?)", (chat_id, proxy))
-    conn.commit()
-    conn.close()
-
-def del_proxy(chat_id):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("DELETE FROM user_proxies WHERE chat_id=?", (chat_id,))
-    conn.commit()
-    conn.close()
-
-# -------------------- Random generators --------------------
-INDIAN_FIRST_NAMES = [
-    "Aarav","Vivaan","Aditya","Vihaan","Arjun","Sai","Pranav","Dhruv",
-    "Krishna","Shaurya","Aryan","Ishaan","Reyansh","Ayaan","Ananya",
-    "Diya","Ishita","Aadhya","Myra","Sara","Anvi","Vedika","Kavya",
-    "Riya","Anika","Sana","Ira","Alisha","Tara","Zara","Arya",
-    "Rohan","Kabir","Amit","Rahul","Priya","Neha","Pooja","Sneha"
-]
-INDIAN_SURNAMES = [
-    "Sharma","Verma","Patel","Singh","Kumar","Gupta","Joshi","Rao",
-    "Reddy","Nair","Menon","Pillai","Iyer","Mishra","Tripathi","Dubey",
-    "Pandey","Chaudhary","Yadav","Saini","Jain","Mehta","Shah","Desai"
-]
-def random_indian_name():
-    return f"{random.choice(INDIAN_FIRST_NAMES)} {random.choice(INDIAN_SURNAMES)}"
-
-def generate_username():
-    letters = ''.join(random.choices('abcdefghijklmnopqrstuvwxyz', k=random.randint(4,5)))
-    digits = ''.join(random.choices('0123456789', k=random.randint(2,3)))
-    return f"{letters}_{digits}"
-
-def random_dob():
-    age = random.randint(30, 70)
-    year = datetime.now().year - age
-    month = random.randint(1, 12)
-    day = random.randint(1, 28)
-    return day, month, year
-
-# -------------------- Proxy validation --------------------
-def parse_proxy(proxy_str):
-    proxy_str = proxy_str.strip()
-    protocol = 'http'
-    rest = proxy_str
-    if '://' in proxy_str:
-        protocol, rest = proxy_str.split('://', 1)
-        if protocol not in ['http', 'https', 'socks5']:
-            return None
-    user, passwd = None, None
-    if '@' in rest:
-        userpass, hostport = rest.split('@', 1)
-        if ':' in userpass:
-            user, passwd = userpass.split(':', 1)
-        else:
-            user, passwd = userpass, ''
-    else:
-        hostport = rest
-    if ':' not in hostport:
-        return None
-    host, port = hostport.split(':', 1)
-    if not port.isdigit():
-        return None
-    server = f"{protocol}://{host}:{port}"
-    proxy_dict = {"server": server}
-    if user:
-        proxy_dict["username"] = user
-    if passwd:
-        proxy_dict["password"] = passwd
-    return proxy_dict
-
-def validate_proxy(proxy_str):
-    parsed = parse_proxy(proxy_str)
-    if not parsed:
-        return False, "Invalid proxy format."
-    server = parsed["server"]
-    auth = ""
-    if parsed.get("username"):
-        auth = f"{parsed['username']}:{parsed.get('password','')}@"
-    proxy_url = server.replace('://', f'://{auth}')
-    proxies = {'http': proxy_url, 'https': proxy_url}
-    try:
-        resp = requests.get('https://www.instagram.com', proxies=proxies, timeout=10)
-        if resp.status_code == 200:
-            return True, "Proxy is alive."
-        else:
-            return False, f"Proxy returned status {resp.status_code}."
-    except Exception as e:
-        return False, f"Proxy error: {str(e)}"
-
-# -------------------- Telegram helpers --------------------
-def call_telegram(method, **kwargs):
-    url = f"{API_URL}/{method}"
-    try:
-        resp = requests.post(url, json=kwargs, timeout=30)
-        if resp.status_code != 200:
-            logger.error(f"API error {resp.status_code}: {resp.text}")
-            return None
-        data = resp.json()
-        if not data.get('ok'):
-            logger.error(f"API error: {data}")
-            return None
-        return data.get('result')
-    except Exception as e:
-        logger.error(f"call_telegram exception: {e}")
-        return None
-
-def send_message(chat_id, text, parse_mode="HTML", reply_markup=None):
-    payload = {"chat_id": chat_id, "text": text, "parse_mode": parse_mode}
-    if reply_markup:
-        payload["reply_markup"] = reply_markup
-    return call_telegram("sendMessage", **payload)
-
-def send_photo(chat_id, photo_bytes, caption=None):
-    files = {'photo': ('captcha.png', BytesIO(photo_bytes), 'image/png')}
-    data = {'chat_id': chat_id}
-    if caption:
-        data['caption'] = caption
-        data['parse_mode'] = 'HTML'
-    url = f"{API_URL}/sendPhoto"
-    try:
-        resp = requests.post(url, data=data, files=files, timeout=30)
-        if resp.status_code != 200:
-            logger.error(f"Send photo error: {resp.status_code} - {resp.text}")
-            return None
-        result = resp.json()
-        if not result.get('ok'):
-            logger.error(f"Send photo error: {result}")
-            return None
-        return result.get('result')
-    except Exception as e:
-        logger.error(f"send_photo exception: {e}")
-        return None
-
-def answer_callback_query(callback_query_id, text=None, show_alert=False):
-    payload = {"callback_query_id": callback_query_id}
-    if text:
-        payload["text"] = text
-        payload["show_alert"] = show_alert
-    return call_telegram("answerCallbackQuery", **payload)
-
-def edit_message_text(chat_id, message_id, text, reply_markup=None):
-    payload = {"chat_id": chat_id, "message_id": message_id, "text": text, "parse_mode": "HTML"}
-    if reply_markup:
-        payload["reply_markup"] = reply_markup
-    return call_telegram("editMessageText", **payload)
-
-# -------------------- Selenium Automation --------------------
-class AutomationSession:
-    def __init__(self, chat_id):
-        self.chat_id = chat_id
-        self.otp_event = threading.Event()
-        self.otp_value = None
-        self.captcha_event = threading.Event()
-        self.captcha_value = None
-        self.running = False
-        self.result = None
-        self.awaiting_credential = None
-
-sessions = {}
-sessions_lock = threading.Lock()
-
-def start_browser(proxy_str=None):
-    options = Options()
-    options.add_argument("--headless=new")
-    options.add_argument("--disable-blink-features=AutomationControlled")
-    options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--window-size=1280,720")
-    options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-    
-    if proxy_str:
-        parsed = parse_proxy(proxy_str)
-        if parsed:
-            server = parsed["server"]
-            auth = ""
-            if parsed.get("username"):
-                auth = f"{parsed['username']}:{parsed.get('password','')}@"
-            proxy_url = server.replace('://', f'://{auth}')
-            options.add_argument(f'--proxy-server={proxy_url}')
-            logger.info(f"Using proxy: {proxy_url}")
-        else:
-            logger.warning("Invalid proxy, ignoring.")
-    
-    # Explicitly use the installed ChromeDriver
-    service = Service(executable_path='/usr/local/bin/chromedriver')
-    driver = webdriver.Chrome(service=service, options=options)
-    driver.set_page_load_timeout(NAV_TIMEOUT)
-    driver.implicitly_wait(ELEMENT_TIMEOUT)
-    logger.info("✅ ChromeDriver launched successfully.")
-    return driver
-
-def detect_captcha(driver):
-    iframes = driver.find_elements(By.TAG_NAME, "iframe")
-    for iframe in iframes:
-        src = iframe.get_attribute("src") or ""
-        if "captcha" in src.lower() or "recaptcha" in src.lower() or "hcaptcha" in src.lower():
-            return True
-    captcha_inputs = driver.find_elements(By.XPATH, "//input[contains(@class, 'captcha') or contains(@id, 'captcha') or @name='captcha']")
-    if captcha_inputs:
-        return True
-    return False
-
-def handle_captcha_selenium(driver, session):
-    logger.info("🧩 CAPTCHA detected – sending screenshot...")
-    screenshot_bytes = driver.get_screenshot_as_png()
-    session.captcha_event.clear()
-    send_photo(session.chat_id, screenshot_bytes, caption="🧩 CAPTCHA detected. Reply with the text.")
-    if not session.captcha_event.wait(timeout=120):
-        send_message(session.chat_id, "⏰ CAPTCHA timeout.")
-        return False
-    solution = session.captcha_value
-    if not solution:
-        return False
-    try:
-        captcha_input = driver.find_element(By.XPATH, "//input[contains(@name, 'captcha') or contains(@id, 'captcha')]")
-        captcha_input.clear()
-        captcha_input.send_keys(solution)
-        submit_btn = driver.find_element(By.XPATH, "//button[@type='submit']")
-        submit_btn.click()
-        send_message(session.chat_id, "✅ CAPTCHA solved.")
-        return True
-    except:
-        send_message(session.chat_id, "❌ CAPTCHA input not found.")
-        return False
-
-def run_automation(chat_id):
-    session = sessions.get(chat_id)
-    if not session:
-        return
-    session.running = True
-
-    creds = get_credential(chat_id)
-    email = creds.get("email")
-    phone = creds.get("phone")
-    if not email and not phone:
-        send_message(chat_id, "❌ No email or phone set. Use /start to choose.")
-        session.running = False
-        return
-
-    if email:
-        login_value = email
-        login_type = "email"
-    else:
-        login_value = phone
-        login_type = "phone"
-
-    full_name = random_indian_name()
-    username = generate_username()
-    password = FIXED_PASSWORD
-    day, month, year = random_dob()
-
-    proxy_str = get_proxy(chat_id)
-    driver = None
-    try:
-        driver = start_browser(proxy_str)
-        send_message(chat_id, "🚀 Browser launched. Starting signup...")
-
-        logger.info("🌐 Navigating to Instagram signup page...")
-        driver.get(INSTA_URL)
-        wait = WebDriverWait(driver, ELEMENT_TIMEOUT)
-
-        if detect_captcha(driver):
-            if not handle_captcha_selenium(driver, session):
-                raise Exception("CAPTCHA failed")
-            time.sleep(2)
-
-        # ---- Email/Phone ----
-        logger.info("📝 Filling email/phone...")
-        field = None
-        try:
-            field = driver.find_element(By.NAME, "emailOrPhone")
-        except:
-            pass
-        if not field:
-            try:
-                field = driver.find_element(By.NAME, "email")
-            except:
-                pass
-        if not field:
-            try:
-                field = driver.find_element(By.XPATH, "//input[@placeholder='Mobile number or email address']")
-            except:
-                pass
-        if not field:
-            raise Exception("Email/phone field not found.")
-        field.clear()
-        field.send_keys(login_value)
-        logger.info(f"Filled email/phone with {login_value}")
-
-        # ---- Password ----
-        logger.info("📝 Filling password...")
-        try:
-            pwd = driver.find_element(By.XPATH, "//input[@type='password']")
-        except:
-            pwd = driver.find_element(By.NAME, "password")
-        pwd.clear()
-        pwd.send_keys(password)
-
-        # ---- Date of Birth ----
-        logger.info("📝 Filling date of birth...")
-        try:
-            dob_label = driver.find_element(By.XPATH, "//label[contains(text(), 'Date of birth') or contains(text(), 'Birthday')]")
-            container = dob_label.find_element(By.XPATH, "./ancestor::div[1]")
-            fields = container.find_elements(By.XPATH, ".//select | .//input")
-            if len(fields) >= 3:
-                day_el = fields[0]
-                month_el = fields[1]
-                year_el = fields[2]
-                if day_el.tag_name == "select":
-                    day_el.send_keys(str(day))
-                else:
-                    day_el.clear()
-                    day_el.send_keys(str(day))
-                if month_el.tag_name == "select":
-                    month_el.send_keys(str(month))
-                else:
-                    month_el.clear()
-                    month_el.send_keys(str(month))
-                if year_el.tag_name == "select":
-                    year_el.send_keys(str(year))
-                else:
-                    year_el.clear()
-                    year_el.send_keys(str(year))
-                logger.info("Filled DOB using label-container approach.")
-            else:
-                raise Exception("Not enough fields in container.")
-        except:
-            # Fallback: by name/placeholder
-            try:
-                day_field = driver.find_element(By.NAME, "day")
-                month_field = driver.find_element(By.NAME, "month")
-                year_field = driver.find_element(By.NAME, "year")
-                day_field.clear()
-                day_field.send_keys(str(day))
-                month_field.clear()
-                month_field.send_keys(str(month))
-                year_field.clear()
-                year_field.send_keys(str(year))
-                logger.info("Filled DOB by name.")
-            except:
-                try:
-                    day_field = driver.find_element(By.XPATH, "//input[@placeholder='DD'] | //select[@placeholder='DD']")
-                    month_field = driver.find_element(By.XPATH, "//input[@placeholder='MM'] | //select[@placeholder='MM']")
-                    year_field = driver.find_element(By.XPATH, "//input[@placeholder='YYYY'] | //select[@placeholder='YYYY']")
-                    if day_field.tag_name == "select":
-                        day_field.send_keys(str(day))
-                    else:
-                        day_field.clear()
-                        day_field.send_keys(str(day))
-                    if month_field.tag_name == "select":
-                        month_field.send_keys(str(month))
-                    else:
-                        month_field.clear()
-                        month_field.send_keys(str(month))
-                    if year_field.tag_name == "select":
-                        year_field.send_keys(str(year))
-                    else:
-                        year_field.clear()
-                        year_field.send_keys(str(year))
-                    logger.info("Filled DOB by placeholder.")
-                except:
-                    raise Exception("Could not find DOB fields.")
-
-        # ---- Full name ----
-        logger.info("📝 Filling full name...")
-        try:
-            name_field = driver.find_element(By.NAME, "fullName")
-        except:
-            name_field = driver.find_element(By.XPATH, "//input[@placeholder='Full name']")
-        name_field.clear()
-        name_field.send_keys(full_name)
-
-        # ---- Username ----
-        logger.info("📝 Filling username...")
-        try:
-            user_field = driver.find_element(By.NAME, "username")
-        except:
-            user_field = driver.find_element(By.XPATH, "//input[@placeholder='Username']")
-        user_field.clear()
-        user_field.send_keys(username)
-
-        send_message(chat_id, f"✅ Form filled.\nEmail/Phone: {login_value}\nName: {full_name}\nUsername: {username}\nDOB: {day}/{month}/{year}")
-        logger.info("All fields filled.")
-
-        # ---- Submit ----
-        logger.info("🔘 Clicking Submit...")
-        submit_btn = driver.find_element(By.XPATH, "//button[@type='submit']")
-        submit_btn.click()
-
-        time.sleep(2)
-        if detect_captcha(driver):
-            if not handle_captcha_selenium(driver, session):
-                raise Exception("CAPTCHA after submit")
-            time.sleep(2)
-
-        # ---- OTP ----
-        logger.info("⏳ Waiting for OTP page...")
-        try:
-            otp_input = WebDriverWait(driver, ELEMENT_TIMEOUT).until(
-                EC.presence_of_element_located((By.XPATH, "//input[@name='code']"))
-            )
-        except:
-            otp_input = WebDriverWait(driver, ELEMENT_TIMEOUT).until(
-                EC.presence_of_element_located((By.XPATH, "//input[@placeholder='Verification code']"))
-            )
-        if not otp_input:
-            raise Exception("OTP field not found.")
-
-        session.otp_event.clear()
-        send_message(chat_id, "🔑 OTP sent to your " + login_type + ". Reply with 6-digit code.")
-        if not session.otp_event.wait(timeout=120):
-            raise TimeoutError("OTP timeout")
-        otp = session.otp_value
-        if not otp:
-            raise ValueError("OTP empty")
-
-        otp_input.clear()
-        otp_input.send_keys(otp)
-        verify_btn = driver.find_element(By.XPATH, "//button[@type='submit']")
-        verify_btn.click()
-
-        time.sleep(2)
-        if detect_captcha(driver):
-            if not handle_captcha_selenium(driver, session):
-                raise Exception("CAPTCHA after OTP")
-            time.sleep(2)
-
-        # ---- Final result ----
-        time.sleep(3)
-        current_url = driver.current_url
-        if "accounts/emailsignup" not in current_url and "instagram.com" in current_url:
-            result_msg = f"✅ SUCCESS – Account created for {full_name} (Username: {username})"
-            session.result = "success"
-            logger.info("✅ SUCCESS")
-        else:
-            try:
-                error = driver.find_element(By.XPATH, "//*[contains(text(), 'Something went wrong')]")
-                if error:
-                    result_msg = "❌ FAILED – Error message"
-                    session.result = "failed"
-                    logger.error("❌ FAILED: error message.")
-                else:
-                    result_msg = "❌ FAILED – Unknown"
-                    session.result = "failed"
-                    logger.error("❌ FAILED: unknown.")
-            except:
-                result_msg = "❌ FAILED – Unknown"
-                session.result = "failed"
-                logger.error("❌ FAILED: unknown.")
-
-        send_message(chat_id, result_msg)
-
-    except Exception as e:
-        logger.error(f"Automation error: {e}", exc_info=True)
-        send_message(chat_id, f"❌ Error: {str(e)}")
-        session.result = "failed"
-    finally:
-        if driver:
-            driver.quit()
-        session.running = False
-        send_message(chat_id, "🏁 Finished.")
-
-# -------------------- Handlers --------------------
-def handle_start(chat_id, message_id=None):
-    keyboard = {
-        "inline_keyboard": [
-            [{"text": "📧 Signup with Email", "callback_data": "choose_email"}],
-            [{"text": "📱 Signup with Phone", "callback_data": "choose_phone"}]
-        ]
-    }
-    creds = get_credential(chat_id)
-    status = ""
-    if creds["email"]:
-        status += f"\n📧 Email: {creds['email']}"
-    if creds["phone"]:
-        status += f"\n📱 Phone: {creds['phone']}"
-    proxy = get_proxy(chat_id)
-    if proxy:
-        status += f"\n🔑 Proxy: {proxy}"
-    if status:
-        status = "\nCurrent credentials:" + status + "\nChoose option to change or start."
-    else:
-        status = "\nChoose an option to set your email or phone."
-    if message_id:
-        edit_message_text(chat_id, message_id, "🤖 **Instagram Signup**" + status, reply_markup=keyboard)
-    else:
-        send_message(chat_id, "🤖 **Instagram Signup**" + status, reply_markup=keyboard)
-
-def handle_callback_query(cq):
-    chat_id = cq.get('message', {}).get('chat', {}).get('id')
-    if not chat_id:
-        return
-    data = cq.get('data', '')
-    message_id = cq.get('message', {}).get('message_id')
-    callback_id = cq.get('id')
-    frm = cq.get('from', {})
-    user_id = frm.get('id')
-
-    if user_id not in OWNER_IDS:
-        answer_callback_query(callback_id, "❌ Not authorized.", show_alert=True)
-        return
-
-    if data == "choose_email":
-        answer_callback_query(callback_id, "Please send your email address.")
-        with sessions_lock:
-            session = sessions.get(chat_id)
-            if not session:
-                session = AutomationSession(chat_id)
-                sessions[chat_id] = session
-            session.awaiting_credential = "email"
-        send_message(chat_id, "📧 Please send your email address (e.g., user@example.com)")
-
-    elif data == "choose_phone":
-        answer_callback_query(callback_id, "Please send your phone number with country code.")
-        with sessions_lock:
-            session = sessions.get(chat_id)
-            if not session:
-                session = AutomationSession(chat_id)
-                sessions[chat_id] = session
-            session.awaiting_credential = "phone"
-        send_message(chat_id, "📱 Please send your phone number with country code (e.g., +911234567890)")
-
-    else:
-        answer_callback_query(callback_id, "Unknown option.")
-
-def handle_message(msg):
-    chat_id = msg.get('chat', {}).get('id')
-    if not chat_id:
-        return
-    text = (msg.get('text') or '').strip()
-    if not text:
-        return
-
-    if chat_id not in OWNER_IDS:
-        send_message(chat_id, "❌ Not authorized.")
-        return
-
-    with sessions_lock:
-        session = sessions.get(chat_id)
-    if session and session.awaiting_credential:
-        cred_type = session.awaiting_credential
-        if cred_type == "email":
-            if '@' not in text or '.' not in text:
-                send_message(chat_id, "❌ Invalid email. Please send again or /cancel")
-                return
-            set_email(chat_id, text)
-            send_message(chat_id, f"✅ Email set to: {text}")
-            session.awaiting_credential = None
-            send_message(chat_id, "🚀 Starting signup automatically...")
-            thread = threading.Thread(target=run_automation, args=(chat_id,), daemon=True)
-            thread.start()
-            return
-        elif cred_type == "phone":
-            if not text.startswith('+') or not text[1:].isdigit():
-                send_message(chat_id, "❌ Invalid phone. Use country code, e.g., +911234567890")
-                return
-            set_phone(chat_id, text)
-            send_message(chat_id, f"✅ Phone set to: {text}")
-            session.awaiting_credential = None
-            send_message(chat_id, "🚀 Starting signup automatically...")
-            thread = threading.Thread(target=run_automation, args=(chat_id,), daemon=True)
-            thread.start()
-            return
-
-    if text.startswith('/'):
-        cmd = text.split()[0].lower()
-        if cmd == '/start':
-            handle_start(chat_id)
-        elif cmd == '/addproxy':
-            parts = text.split(maxsplit=1)
-            if len(parts) < 2 or not parts[1]:
-                send_message(chat_id, "Usage: /addproxy <proxy_string>\nExamples:\n  http://user:pass@ip:port\n  socks5://ip:port\n  ip:port (assumes http)")
-                return
-            proxy_str = parts[1].strip()
-            ok, msg = validate_proxy(proxy_str)
-            if not ok:
-                send_message(chat_id, f"❌ Proxy validation failed: {msg}")
-                return
-            set_proxy(chat_id, proxy_str)
-            send_message(chat_id, f"✅ Proxy added successfully!\n{proxy_str}")
-        elif cmd == '/removeproxy':
-            del_proxy(chat_id)
-            send_message(chat_id, "✅ Proxy removed.")
-        elif cmd == '/setemail':
-            parts = text.split(maxsplit=1)
-            if len(parts) < 2 or not parts[1]:
-                send_message(chat_id, "Usage: /setemail <your_email@example.com>")
-                return
-            new_email = parts[1].strip()
-            if '@' not in new_email or '.' not in new_email:
-                send_message(chat_id, "❌ Invalid email.")
-                return
-            set_email(chat_id, new_email)
-            send_message(chat_id, f"✅ Email set to: {new_email}")
-        elif cmd == '/setphone':
-            parts = text.split(maxsplit=1)
-            if len(parts) < 2 or not parts[1]:
-                send_message(chat_id, "Usage: /setphone <+911234567890>")
-                return
-            new_phone = parts[1].strip()
-            if not new_phone.startswith('+') or not new_phone[1:].isdigit():
-                send_message(chat_id, "❌ Invalid phone number.")
-                return
-            set_phone(chat_id, new_phone)
-            send_message(chat_id, f"✅ Phone set to: {new_phone}")
-        elif cmd == '/status':
-            creds = get_credential(chat_id)
-            proxy = get_proxy(chat_id)
-            msg = "📊 Current status:\n"
-            if creds["email"]:
-                msg += f"📧 Email: {creds['email']}\n"
-            if creds["phone"]:
-                msg += f"📱 Phone: {creds['phone']}\n"
-            if proxy:
-                msg += f"🔑 Proxy: {proxy}\n"
-            if not creds["email"] and not creds["phone"]:
-                msg += "❌ No credential set. Use /start to choose."
-            send_message(chat_id, msg)
-        elif cmd == '/cancel':
-            if session and session.awaiting_credential:
-                session.awaiting_credential = None
-                send_message(chat_id, "✅ Cancelled credential input.")
-            else:
-                send_message(chat_id, "No pending action.")
-        else:
-            send_message(chat_id, "Unknown command. Available:\n/start\n/addproxy <proxy>\n/removeproxy\n/setemail\n/setphone\n/status\n/cancel")
-    else:
-        send_message(chat_id, "Use commands or /start to begin.")
-
-# -------------------- Polling --------------------
-def polling_loop():
-    offset = 0
-    logger.info("Polling loop started.")
+def get_headers():
+    """Fetch fresh headers with cookies."""
     while True:
         try:
-            payload = {"timeout": 30, "offset": offset, "allowed_updates": json.dumps(["message", "callback_query"])}
-            url = f"{API_URL}/getUpdates"
-            resp = requests.get(url, params=payload, timeout=35)
-            if resp.status_code != 200:
-                logger.error(f"getUpdates error: {resp.status_code}")
-                time.sleep(5)
-                continue
-            data = resp.json()
-            if not data.get('ok'):
-                logger.error(f"getUpdates error: {data}")
-                time.sleep(5)
-                continue
+            an_agent = (
+                f'Mozilla/5.0 (Linux; Android {random.randint(9, 13)}; '
+                f'{"".join(random.choices(string.ascii_uppercase, k=3))}{random.randint(111, 999)}) '
+                f'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/111.0.0.0 Mobile Safari/537.36'
+            )
+            r = requests.get(
+                'https://www.instagram.com/api/v1/web/accounts/login/ajax/',
+                headers={'user-agent': an_agent},
+                proxies=proxies,
+                timeout=30
+            ).cookies
 
-            for update in data.get('result', []):
-                update_id = update['update_id']
-                if update_id >= offset:
-                    offset = update_id + 1
-                    if 'message' in update:
-                        handle_message(update['message'])
-                    elif 'callback_query' in update:
-                        handle_callback_query(update['callback_query'])
-            if data.get('result'):
-                last = data['result'][-1]['update_id']
-                if last >= offset:
-                    offset = last + 1
+            response1 = requests.get(
+                'https://www.instagram.com/',
+                headers={'user-agent': an_agent},
+                proxies=proxies,
+                timeout=30
+            )
+            appid = response1.text.split('APP_ID":"')[1].split('"')[0]
+            rollout = response1.text.split('rollout_hash":"')[1].split('"')[0]
+
+            headers = {
+                'authority': 'www.instagram.com',
+                'accept': '*/*',
+                'accept-language': 'en-US,en;q=0.9',
+                'content-type': 'application/x-www-form-urlencoded',
+                'cookie': f'dpr=3; csrftoken={r["csrftoken"]}; mid={r["mid"]}; ig_did={r["ig_did"]}',
+                'origin': 'https://www.instagram.com',
+                'referer': 'https://www.instagram.com/accounts/signup/email/',
+                'user-agent': an_agent,
+                'x-csrftoken': r["csrftoken"],
+                'x-ig-app-id': str(appid),
+                'x-instagram-ajax': str(rollout),
+                'x-web-device-id': r["ig_did"],
+            }
+            return headers
+        except Exception:
+            time.sleep(2)
+
+def generate_username(firstname):
+    base = firstname.lower().replace(" ", "")
+    suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=5))
+    return f"{base}_{suffix}"
+
+def send_verification_email(headers, email):
+    try:
+        device_id = headers['cookie'].split('mid=')[1].split(';')[0]
+        data = {'device_id': device_id, 'email': email}
+        response = requests.post(
+            'https://www.instagram.com/api/v1/accounts/send_verify_email/',
+            headers=headers, data=data, proxies=proxies, timeout=30
+        )
+        return response.text
+    except Exception:
+        return ""
+
+def validate_otp(headers, email, code):
+    try:
+        device_id = headers['cookie'].split('mid=')[1].split(';')[0]
+        data = {'code': code, 'device_id': device_id, 'email': email}
+        response = requests.post(
+            'https://www.instagram.com/api/v1/accounts/check_confirmation_code/',
+            headers=headers, data=data, proxies=proxies, timeout=30
+        )
+        return response
+    except Exception:
+        return None
+
+def create_instagram_account(headers, email, signup_code, chat_id):
+    firstname = names.get_first_name()
+    username = generate_username(firstname)
+    password = f"{firstname.strip()}@{random.randint(100, 999)}"
+
+    data = {
+        'enc_password': f'#PWD_INSTAGRAM_BROWSER:0:{round(time.time())}:{password}',
+        'email': email,
+        'username': username,
+        'first_name': firstname,
+        'month': random.randint(1, 12),
+        'day': random.randint(1, 28),
+        'year': random.randint(1990, 2001),
+        'client_id': headers['cookie'].split('mid=')[1].split(';')[0],
+        'seamless_login_enabled': '1',
+        'tos_version': 'row',
+        'force_sign_up_code': signup_code,
+    }
+
+    for attempt in range(3):
+        try:
+            if attempt > 0:
+                headers = get_headers()
+                data['client_id'] = headers['cookie'].split('mid=')[1].split(';')[0]
+
+            response = requests.post(
+                'https://www.instagram.com/api/v1/web/accounts/web_create_ajax/',
+                headers=headers, data=data, proxies=proxies, timeout=30
+            )
+
+            if '"account_created":true' in response.text:
+                sessionid = response.cookies.get('sessionid')
+                csrftoken = headers['x-csrftoken']
+                cookie_dict = response.cookies.get_dict()
+                cookie_str = "; ".join([f"{k}={v}" for k, v in cookie_dict.items()])
+                full_cookies = f"{headers['cookie']}; sessionid={sessionid}; {cookie_str}"
+
+                result_msg = (
+                    f"✅ **Account Created Successfully!**\n"
+                    f"👤 Username: `{username}`\n"
+                    f"🔑 Password: `{password}`\n"
+                    f"📧 Email: `{email}`\n"
+                    f"🍪 Cookies:\n`{full_cookies}`"
+                )
+                bot.send_message(chat_id, result_msg, parse_mode="Markdown")
+                return True
+
+            if '"error_type":"username_is_taken"' in response.text:
+                username = generate_username(firstname + random.choice(string.ascii_lowercase))
+                data['username'] = username
+                continue
+            elif '"error_type":"bad_password"' in response.text:
+                password = f"{firstname.strip()}@{random.randint(100, 999)}"
+                data['enc_password'] = f'#PWD_INSTAGRAM_BROWSER:0:{round(time.time())}:{password}'
+                continue
+            else:
+                error = response.text[:300]
+                bot.send_message(chat_id, f"❌ Attempt {attempt+1} failed.\nError: {error}")
+                return False
+
         except Exception as e:
-            logger.error(f"Poll exception: {e}")
-            time.sleep(5)
+            bot.send_message(chat_id, f"❌ Exception {attempt+1}: {str(e)}")
+            time.sleep(3)
 
-# -------------------- Main --------------------
+    bot.send_message(chat_id, "❌ All attempts failed.")
+    return False
+
+# ============ BOT HANDLERS ============
+
+@bot.message_handler(commands=['start'])
+def handle_start(message):
+    chat_id = message.chat.id
+    if OWNER_IDS and chat_id not in OWNER_IDS:
+        bot.reply_to(message, "⛔ Unauthorized.")
+        return
+    bot.reply_to(message,
+        "🤖 **Instagram Account Creator Bot**\n\n"
+        "Send `/create <email>` to start.\n"
+        "Example: `/create test@example.com`\n\n"
+        "You'll receive OTP – reply with the 6‑digit code."
+    )
+
+@bot.message_handler(commands=['create'])
+def handle_create(message):
+    chat_id = message.chat.id
+    if OWNER_IDS and chat_id not in OWNER_IDS:
+        bot.reply_to(message, "⛔ Unauthorized.")
+        return
+
+    if chat_id in user_sessions and user_sessions[chat_id].get('state') == 'waiting_otp':
+        bot.reply_to(message, "⏳ You have a pending OTP. Please enter the code.")
+        return
+
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].strip():
+        bot.reply_to(message, "❌ Please provide an email.\nExample: `/create test@example.com`")
+        return
+    email = parts[1].strip()
+
+    bot.reply_to(message, f"🔄 Starting for `{email}` ...", parse_mode="Markdown")
+
+    headers = get_headers()
+    resp_text = send_verification_email(headers, email)
+
+    if 'email_sent":true' in resp_text:
+        bot.send_message(chat_id, f"✅ OTP sent to `{email}`. Reply with the 6‑digit code.", parse_mode="Markdown")
+        user_sessions[chat_id] = {
+            'state': 'waiting_otp',
+            'email': email,
+            'headers': headers,
+            'signup_code': None,
+        }
+    else:
+        bot.send_message(chat_id, f"❌ Failed to send OTP.\n{resp_text[:200]}")
+
+@bot.message_handler(func=lambda msg: True)
+def handle_all_messages(message):
+    chat_id = message.chat.id
+    if chat_id not in user_sessions:
+        bot.reply_to(message, "ℹ️ Use `/create <email>` to start.")
+        return
+
+    session = user_sessions[chat_id]
+    if session.get('state') == 'waiting_otp':
+        otp = message.text.strip()
+        if not otp.isdigit() or len(otp) != 6:
+            bot.reply_to(message, "❌ Enter a valid 6‑digit OTP.")
+            return
+
+        headers = session['headers']
+        email = session['email']
+        response = validate_otp(headers, email, otp)
+
+        if response and 'status":"ok' in response.text:
+            signup_code = response.json().get('signup_code')
+            if signup_code:
+                bot.send_message(chat_id, "✅ OTP validated. Creating account...")
+                del user_sessions[chat_id]
+                create_instagram_account(headers, email, signup_code, chat_id)
+            else:
+                bot.send_message(chat_id, "❌ No signup_code received.")
+                del user_sessions[chat_id]
+        else:
+            bot.reply_to(message, "❌ Invalid OTP. Try again or /create.")
+    else:
+        bot.reply_to(message, "ℹ️ Use `/create <email>` to start.")
+
+# ============ MAIN ============
 if __name__ == "__main__":
-    init_db()
-    call_telegram("deleteWebhook", drop_pending_updates=True)
-    time.sleep(1)
-    me = call_telegram("getMe")
-    if not me:
-        logger.error("Invalid token.")
-        sys.exit(1)
-    logger.info(f"Bot @{me['username']} started.")
-    polling_loop()
+    print("🤖 Bot started polling...")
+    bot.infinity_polling()
