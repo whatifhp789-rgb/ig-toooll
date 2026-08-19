@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Telegram Bot for Instagram Signup – Selenium Edition (Final Fix)
+# Telegram Bot for Instagram Signup – Selenium Final (No webdriver-manager)
 
 import os, sys, json, time, random, threading, requests, logging, sqlite3
 from io import BytesIO
@@ -9,12 +9,10 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
-from webdriver_manager.chrome import ChromeDriverManager
-from selenium.webdriver.chrome.service import Service as ChromeService
 from selenium.webdriver.chrome.options import Options
 
 # ====== CHANGE THESE TWO LINES ONLY ======
-BOT_TOKEN = "8760264279:AAHH7DdJpFCpF7ohl_AnwajqjUxvyegDpyA"
+BOT_TOKEN = "8760264279:AAH3BT5mjdYhE6UWbesX07pSDe8ehy1QDSw"
 OWNER_IDS = [8754004223]
 # =======================================
 
@@ -248,7 +246,7 @@ def start_browser(proxy_str=None):
     options.add_argument("--no-sandbox")
     options.add_argument("--window-size=1280,720")
     options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-    # Proxy
+    
     if proxy_str:
         parsed = parse_proxy(proxy_str)
         if parsed:
@@ -261,22 +259,19 @@ def start_browser(proxy_str=None):
             logger.info(f"Using proxy: {proxy_url}")
         else:
             logger.warning("Invalid proxy, ignoring.")
-    driver = webdriver.Chrome(
-        service=ChromeService(ChromeDriverManager().install()),
-        options=options
-    )
+    
+    # Use the chromedriver from PATH (installed in Docker)
+    driver = webdriver.Chrome(options=options)
     driver.set_page_load_timeout(NAV_TIMEOUT)
     driver.implicitly_wait(ELEMENT_TIMEOUT)
     return driver
 
 def detect_captcha(driver):
-    # Look for iframes or CAPTCHA elements
     iframes = driver.find_elements(By.TAG_NAME, "iframe")
     for iframe in iframes:
         src = iframe.get_attribute("src") or ""
         if "captcha" in src.lower() or "recaptcha" in src.lower() or "hcaptcha" in src.lower():
             return True
-    # Also look for visible CAPTCHA inputs
     captcha_inputs = driver.find_elements(By.XPATH, "//input[contains(@class, 'captcha') or contains(@id, 'captcha') or @name='captcha']")
     if captcha_inputs:
         return True
@@ -284,7 +279,6 @@ def detect_captcha(driver):
 
 def handle_captcha_selenium(driver, session):
     logger.info("🧩 CAPTCHA detected – sending screenshot...")
-    # Take screenshot
     screenshot_bytes = driver.get_screenshot_as_png()
     session.captcha_event.clear()
     send_photo(session.chat_id, screenshot_bytes, caption="🧩 CAPTCHA detected. Reply with the text.")
@@ -294,18 +288,15 @@ def handle_captcha_selenium(driver, session):
     solution = session.captcha_value
     if not solution:
         return False
-    # Try to fill CAPTCHA
-    captcha_input = driver.find_element(By.XPATH, "//input[contains(@name, 'captcha') or contains(@id, 'captcha')]")
-    if captcha_input:
+    try:
+        captcha_input = driver.find_element(By.XPATH, "//input[contains(@name, 'captcha') or contains(@id, 'captcha')]")
         captcha_input.clear()
         captcha_input.send_keys(solution)
-        # Click submit if visible
         submit_btn = driver.find_element(By.XPATH, "//button[@type='submit']")
-        if submit_btn:
-            submit_btn.click()
+        submit_btn.click()
         send_message(session.chat_id, "✅ CAPTCHA solved.")
         return True
-    else:
+    except:
         send_message(session.chat_id, "❌ CAPTCHA input not found.")
         return False
 
@@ -345,15 +336,13 @@ def run_automation(chat_id):
         driver.get(INSTA_URL)
         wait = WebDriverWait(driver, ELEMENT_TIMEOUT)
 
-        # Check initial CAPTCHA
         if detect_captcha(driver):
             if not handle_captcha_selenium(driver, session):
                 raise Exception("CAPTCHA failed")
             time.sleep(2)
 
-        # ---- Fill email/phone ----
+        # ---- Email/Phone ----
         logger.info("📝 Filling email/phone...")
-        # Find field – try by name, then by placeholder
         field = None
         try:
             field = driver.find_element(By.NAME, "emailOrPhone")
@@ -386,75 +375,11 @@ def run_automation(chat_id):
 
         # ---- Date of Birth ----
         logger.info("📝 Filling date of birth...")
-        # Find the "Date of birth" label, then find the parent div, then get the three select/input inside
+        # Try label-container first
         try:
             dob_label = driver.find_element(By.XPATH, "//label[contains(text(), 'Date of birth') or contains(text(), 'Birthday')]")
             container = dob_label.find_element(By.XPATH, "./ancestor::div[1]")
             fields = container.find_elements(By.XPATH, ".//select | .//input")
-        except:
-            # Fallback: look for the DOB fields by order – try to find input after password
-            # Let's find all visible inputs and selects after password
-            all_fields = driver.find_elements(By.XPATH, "//input | //select")
-            # Filter out hidden, submit, etc.
-            visible = [el for el in all_fields if el.is_displayed() and el.get_attribute("type") not in ["hidden", "submit", "button", "checkbox", "radio"]]
-            # Remove password field itself
-            visible = [el for el in visible if el.get_attribute("type") != "password"]
-            # Now we need day, month, year – they are usually the next 3 after email and password
-            # We can find the password index and then take the next three
-            # Let's implement that fallback in a loop
-            # We'll just try to find fields by name day, month, year
-            day_field = None
-            month_field = None
-            year_field = None
-            try:
-                day_field = driver.find_element(By.NAME, "day")
-            except:
-                pass
-            try:
-                month_field = driver.find_element(By.NAME, "month")
-            except:
-                pass
-            try:
-                year_field = driver.find_element(By.NAME, "year")
-            except:
-                pass
-            if not day_field or not month_field or not year_field:
-                # Try by placeholder
-                try:
-                    day_field = driver.find_element(By.XPATH, "//input[@placeholder='DD'] | //select[@placeholder='DD']")
-                except:
-                    pass
-                try:
-                    month_field = driver.find_element(By.XPATH, "//input[@placeholder='MM'] | //select[@placeholder='MM']")
-                except:
-                    pass
-                try:
-                    year_field = driver.find_element(By.XPATH, "//input[@placeholder='YYYY'] | //select[@placeholder='YYYY']")
-                except:
-                    pass
-            if day_field and month_field and year_field:
-                # We have fields
-                if day_field.tag_name == "select":
-                    day_field.send_keys(str(day))
-                else:
-                    day_field.clear()
-                    day_field.send_keys(str(day))
-                if month_field.tag_name == "select":
-                    month_field.send_keys(str(month))
-                else:
-                    month_field.clear()
-                    month_field.send_keys(str(month))
-                if year_field.tag_name == "select":
-                    year_field.send_keys(str(year))
-                else:
-                    year_field.clear()
-                    year_field.send_keys(str(year))
-                logger.info("Filled DOB via fallback selectors.")
-                dob_filled = True
-            else:
-                raise Exception("Could not find DOB fields.")
-        else:
-            # We have container and fields
             if len(fields) >= 3:
                 day_el = fields[0]
                 month_el = fields[1]
@@ -476,7 +401,44 @@ def run_automation(chat_id):
                     year_el.send_keys(str(year))
                 logger.info("Filled DOB using label-container approach.")
             else:
-                raise Exception("Not enough DOB fields in container.")
+                raise Exception("Not enough fields in container.")
+        except:
+            # Fallback: by name/placeholder
+            try:
+                day_field = driver.find_element(By.NAME, "day")
+                month_field = driver.find_element(By.NAME, "month")
+                year_field = driver.find_element(By.NAME, "year")
+                day_field.clear()
+                day_field.send_keys(str(day))
+                month_field.clear()
+                month_field.send_keys(str(month))
+                year_field.clear()
+                year_field.send_keys(str(year))
+                logger.info("Filled DOB by name.")
+            except:
+                # Try placeholders
+                try:
+                    day_field = driver.find_element(By.XPATH, "//input[@placeholder='DD'] | //select[@placeholder='DD']")
+                    month_field = driver.find_element(By.XPATH, "//input[@placeholder='MM'] | //select[@placeholder='MM']")
+                    year_field = driver.find_element(By.XPATH, "//input[@placeholder='YYYY'] | //select[@placeholder='YYYY']")
+                    if day_field.tag_name == "select":
+                        day_field.send_keys(str(day))
+                    else:
+                        day_field.clear()
+                        day_field.send_keys(str(day))
+                    if month_field.tag_name == "select":
+                        month_field.send_keys(str(month))
+                    else:
+                        month_field.clear()
+                        month_field.send_keys(str(month))
+                    if year_field.tag_name == "select":
+                        year_field.send_keys(str(year))
+                    else:
+                        year_field.clear()
+                        year_field.send_keys(str(year))
+                    logger.info("Filled DOB by placeholder.")
+                except:
+                    raise Exception("Could not find DOB fields.")
 
         # ---- Full name ----
         logger.info("📝 Filling full name...")
@@ -504,23 +466,19 @@ def run_automation(chat_id):
         submit_btn = driver.find_element(By.XPATH, "//button[@type='submit']")
         submit_btn.click()
 
-        # Wait for possible CAPTCHA after submit
         time.sleep(2)
         if detect_captcha(driver):
             if not handle_captcha_selenium(driver, session):
                 raise Exception("CAPTCHA after submit")
             time.sleep(2)
 
-        # ---- Wait for OTP ----
+        # ---- OTP ----
         logger.info("⏳ Waiting for OTP page...")
-        # Wait for OTP input
-        otp_input = None
         try:
             otp_input = WebDriverWait(driver, ELEMENT_TIMEOUT).until(
                 EC.presence_of_element_located((By.XPATH, "//input[@name='code']"))
             )
         except:
-            # Try by placeholder
             otp_input = WebDriverWait(driver, ELEMENT_TIMEOUT).until(
                 EC.presence_of_element_located((By.XPATH, "//input[@placeholder='Verification code']"))
             )
@@ -537,7 +495,6 @@ def run_automation(chat_id):
 
         otp_input.clear()
         otp_input.send_keys(otp)
-        # Click verify
         verify_btn = driver.find_element(By.XPATH, "//button[@type='submit']")
         verify_btn.click()
 
@@ -548,7 +505,6 @@ def run_automation(chat_id):
             time.sleep(2)
 
         # ---- Final result ----
-        # Check if we are redirected to feed or still on signup
         time.sleep(3)
         current_url = driver.current_url
         if "accounts/emailsignup" not in current_url and "instagram.com" in current_url:
@@ -556,21 +512,20 @@ def run_automation(chat_id):
             session.result = "success"
             logger.info("✅ SUCCESS")
         else:
-            # Check for error message
             try:
                 error = driver.find_element(By.XPATH, "//*[contains(text(), 'Something went wrong')]")
                 if error:
                     result_msg = "❌ FAILED – Error message"
-                    logger.error("❌ FAILED: error message displayed.")
                     session.result = "failed"
+                    logger.error("❌ FAILED: error message.")
                 else:
                     result_msg = "❌ FAILED – Unknown"
-                    logger.error("❌ FAILED: unknown issue.")
                     session.result = "failed"
+                    logger.error("❌ FAILED: unknown.")
             except:
                 result_msg = "❌ FAILED – Unknown"
                 session.result = "failed"
-                logger.error("❌ FAILED: unknown issue.")
+                logger.error("❌ FAILED: unknown.")
 
         send_message(chat_id, result_msg)
 
@@ -584,7 +539,7 @@ def run_automation(chat_id):
         session.running = False
         send_message(chat_id, "🏁 Finished.")
 
-# -------------------- Handlers (unchanged) --------------------
+# -------------------- Handlers --------------------
 def handle_start(chat_id, message_id=None):
     keyboard = {
         "inline_keyboard": [
