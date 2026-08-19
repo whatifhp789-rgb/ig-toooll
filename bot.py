@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Instagram Account Creator Bot – Fixed OTP Send
+# Instagram Account Creator Bot – Fixed Creation Error
 
 import os
 import random
@@ -8,6 +8,7 @@ import time
 import names
 import requests
 import telebot
+import json
 
 # ============================================================
 #  ✏️ EDIT THESE TWO LINES – PUT YOUR VALUES HERE
@@ -75,7 +76,6 @@ def generate_username(firstname):
     return f"{base}_{suffix}"
 
 def send_verification_email(headers, email):
-    """Send OTP and return (success, response_text)."""
     try:
         device_id = headers['cookie'].split('mid=')[1].split(';')[0]
         data = {'device_id': device_id, 'email': email}
@@ -86,9 +86,7 @@ def send_verification_email(headers, email):
         if response.status_code == 200 and 'email_sent":true' in response.text:
             return True, response.text
         else:
-            # return error details
-            error_msg = f"Status: {response.status_code}, Response: {response.text[:300]}"
-            return False, error_msg
+            return False, f"Status: {response.status_code}, Response: {response.text[:500]}"
     except Exception as e:
         return False, str(e)
 
@@ -123,7 +121,7 @@ def create_instagram_account(headers, email, signup_code, chat_id):
         'force_sign_up_code': signup_code,
     }
 
-    for attempt in range(3):
+    for attempt in range(5):  # more attempts
         try:
             if attempt > 0:
                 headers = get_headers()
@@ -134,7 +132,11 @@ def create_instagram_account(headers, email, signup_code, chat_id):
                 headers=headers, data=data, proxies=proxies, timeout=30
             )
 
-            if '"account_created":true' in response.text:
+            # Full response for debugging
+            full_response = response.text
+            status_code = response.status_code
+
+            if '"account_created":true' in full_response:
                 sessionid = response.cookies.get('sessionid')
                 csrftoken = headers['x-csrftoken']
                 cookie_dict = response.cookies.get_dict()
@@ -151,18 +153,41 @@ def create_instagram_account(headers, email, signup_code, chat_id):
                 bot.send_message(chat_id, result_msg, parse_mode="Markdown")
                 return True
 
-            if '"error_type":"username_is_taken"' in response.text:
+            # Check for specific errors
+            if '"error_type":"username_is_taken"' in full_response:
                 username = generate_username(firstname + random.choice(string.ascii_lowercase))
                 data['username'] = username
                 continue
-            elif '"error_type":"bad_password"' in response.text:
+            elif '"error_type":"bad_password"' in full_response:
                 password = f"{firstname.strip()}@{random.randint(100, 999)}"
                 data['enc_password'] = f'#PWD_INSTAGRAM_BROWSER:0:{round(time.time())}:{password}'
                 continue
-            else:
-                error = response.text[:300]
-                bot.send_message(chat_id, f"❌ Attempt {attempt+1} failed.\nError: {error}")
-                return False
+            elif '"error_type":"signup_code_expired"' in full_response:
+                # signup_code expired – need to resend OTP
+                bot.send_message(chat_id, "⏰ Signup code expired. Resending OTP...")
+                # Resend OTP and get new signup_code
+                headers = get_headers()
+                success, msg = send_verification_email(headers, email)
+                if success:
+                    bot.send_message(chat_id, f"✅ New OTP sent to `{email}`. Please reply with the new code.", parse_mode="Markdown")
+                    # Store new headers and set state to wait for OTP again
+                    user_sessions[chat_id] = {
+                        'state': 'waiting_otp',
+                        'email': email,
+                        'headers': headers,
+                        'signup_code': None,
+                    }
+                    return False  # stop this attempt, user will provide new OTP
+                else:
+                    bot.send_message(chat_id, f"❌ Failed to resend OTP: {msg}")
+                    return False
+
+            # Unknown error – send full response to user
+            error_msg = f"Status: {status_code}\nResponse: {full_response[:800]}"
+            bot.send_message(chat_id, f"❌ Attempt {attempt+1} failed.\nError: {error_msg}")
+            # Wait and retry
+            time.sleep(3)
+            continue
 
         except Exception as e:
             bot.send_message(chat_id, f"❌ Exception {attempt+1}: {str(e)}")
@@ -219,12 +244,10 @@ def handle_create(message):
             }
             return
         else:
-            # If attempt < 2, wait and retry
             if attempt < 2:
                 bot.send_message(chat_id, f"⚠️ OTP sending failed (attempt {attempt+1}). Retrying...")
                 time.sleep(3)
             else:
-                # Final failure
                 bot.send_message(chat_id, f"❌ Failed to send OTP after 3 attempts.\nError: {response_text}")
                 return
 
@@ -250,7 +273,9 @@ def handle_all_messages(message):
             signup_code = response.json().get('signup_code')
             if signup_code:
                 bot.send_message(chat_id, "✅ OTP validated. Creating account...")
-                del user_sessions[chat_id]
+                # clear OTP state but keep session for potential resend
+                del user_sessions[chat_id]  # we'll re-add if signup expires
+                # create account (this may re-add session if signup_code expires)
                 create_instagram_account(headers, email, signup_code, chat_id)
             else:
                 bot.send_message(chat_id, "❌ No signup_code received.")
